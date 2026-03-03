@@ -4,6 +4,11 @@ import { modelSwitch, modelAdd, modelList, modelRemove, modelCurrent } from "./c
 import { statusCommand } from "./commands/status.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { restartCommand, stopCommand } from "./commands/restart.js";
+import { updateCommand } from "./commands/update.js";
+import { backupCommand, backupListCommand, backupRestoreCommand } from "./commands/backup.js";
+import { configShowCommand, configGetCommand, configSetCommand } from "./commands/config.js";
+import { logsCommand } from "./commands/logs.js";
+import { channelAdd, channelRemove, channelList } from "./commands/channel.js";
 import { setVerbose } from "./utils/logger.js";
 
 const program = new Command();
@@ -78,5 +83,77 @@ program
   .command("stop")
   .description("停止 Gateway")
   .action(stopCommand);
+
+// ocm update
+program
+  .command("update")
+  .description("更新 OpenClaw 到最新版本")
+  .action(updateCommand);
+
+// ocm backup
+const backup = program
+  .command("backup")
+  .description("备份当前配置")
+  .action(backupCommand);
+
+backup
+  .command("list")
+  .alias("ls")
+  .description("列出所有备份")
+  .action(backupListCommand);
+
+backup
+  .command("restore <id>")
+  .description("从备份恢复（支持序号或时间戳关键词）")
+  .action((id: string) => backupRestoreCommand(id));
+
+// ocm config
+const config = program
+  .command("config")
+  .description("配置管理");
+
+config
+  .command("show")
+  .description("显示当前配置")
+  .action(configShowCommand);
+
+config
+  .command("get <key>")
+  .description("获取配置项（支持 dot notation）")
+  .action((key: string) => configGetCommand(key));
+
+config
+  .command("set <key> <value>")
+  .description("设置配置项")
+  .action((key: string, value: string) => configSetCommand(key, value));
+
+// ocm channel
+const channel = program
+  .command("channel")
+  .description("渠道管理（添加/移除/列表）");
+
+channel
+  .command("add")
+  .description("交互式添加聊天渠道（Telegram/Discord/飞书）")
+  .action(channelAdd);
+
+channel
+  .command("remove [type]")
+  .alias("rm")
+  .description("移除一个聊天渠道")
+  .action((type?: string) => channelRemove(type));
+
+channel
+  .command("list")
+  .alias("ls")
+  .description("列出已配置的渠道")
+  .action(channelList);
+
+// ocm logs
+program
+  .command("logs")
+  .description("查看 Gateway 日志")
+  .option("--tail <n>", "显示最后 N 行", "50")
+  .action((options: { tail?: string }) => logsCommand(options));
 
 program.parse();

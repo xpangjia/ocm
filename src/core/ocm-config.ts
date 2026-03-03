@@ -2,10 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import type { OcmConfig, OcmProviders, ProviderConfig } from "../registry/types.js";
+import type { ChannelConfig } from "../channels/types.js";
 
 const OCM_DIR = path.join(os.homedir(), ".ocm");
 const CONFIG_PATH = path.join(OCM_DIR, "config.json");
 const PROVIDERS_PATH = path.join(OCM_DIR, "providers.json");
+const CHANNELS_PATH = path.join(OCM_DIR, "channels.json");
 const BACKUPS_DIR = path.join(OCM_DIR, "backups");
 
 export function ensureOcmDir(): void {
@@ -92,6 +94,50 @@ export function getCurrentModel(): { provider: string; model: string } {
   return readProviders().current;
 }
 
+// ── Channels ──
+
+export interface OcmChannels {
+  version: string;
+  channels: Record<string, ChannelConfig>;
+}
+
+function defaultChannels(): OcmChannels {
+  return {
+    version: "1.0.0",
+    channels: {},
+  };
+}
+
+export function readChannels(): OcmChannels {
+  if (!fs.existsSync(CHANNELS_PATH)) return defaultChannels();
+  try {
+    return JSON.parse(fs.readFileSync(CHANNELS_PATH, "utf-8"));
+  } catch {
+    return defaultChannels();
+  }
+}
+
+export function writeChannels(channels: OcmChannels): void {
+  ensureOcmDir();
+  fs.writeFileSync(CHANNELS_PATH, JSON.stringify(channels, null, 2) + "\n");
+}
+
+export function addChannel(id: string, config: ChannelConfig): void {
+  const channels = readChannels();
+  channels.channels[id] = config;
+  writeChannels(channels);
+}
+
+export function removeChannel(id: string): void {
+  const channels = readChannels();
+  delete channels.channels[id];
+  writeChannels(channels);
+}
+
+export function getConfiguredChannels(): Record<string, ChannelConfig> {
+  return readChannels().channels;
+}
+
 // ── Backup ──
 
 export function backupConfig(): string {
@@ -119,4 +165,4 @@ export function getOpenClawConfigPath(): string {
   return path.join(os.homedir(), ".openclaw", "openclaw.json");
 }
 
-export { OCM_DIR, CONFIG_PATH, PROVIDERS_PATH, BACKUPS_DIR };
+export { OCM_DIR, CONFIG_PATH, PROVIDERS_PATH, CHANNELS_PATH, BACKUPS_DIR };
