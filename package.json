@@ -6,21 +6,39 @@
   "bin": {
     "ocm": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "install.sh",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run typecheck && npm run build && npm test"
   },
   "keywords": [
     "openclaw",
     "ai",
     "cli",
     "installer",
-    "manager"
+    "manager",
+    "model-switch",
+    "chinese",
+    "telegram",
+    "discord",
+    "feishu"
   ],
   "author": "xpangjia",
   "license": "MIT",
+  "homepage": "https://github.com/xpangjia/ocm#readme",
+  "bugs": {
+    "url": "https://github.com/xpangjia/ocm/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/xpangjia/ocm.git"
@@ -36,6 +54,7 @@
   "devDependencies": {
     "@types/node": "^22.15.0",
     "tsup": "^8.4.0",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.4"
   }
 }
