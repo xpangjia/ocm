@@ -1,0 +1,41 @@
+{
+  "name": "ocm",
+  "version": "0.1.0",
+  "description": "OpenClaw Manager — 一站式安装 & 管理工具，专为中文用户和国内网络优化",
+  "type": "module",
+  "bin": {
+    "ocm": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "openclaw",
+    "ai",
+    "cli",
+    "installer",
+    "manager"
+  ],
+  "author": "xpangjia",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xpangjia/ocm.git"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.10.0",
+    "commander": "^13.1.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.0"
+  }
+}
