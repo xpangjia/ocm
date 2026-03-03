@@ -211,9 +211,10 @@ install_ocm() {
 
   info "正在安装 OCM..."
 
-  if ! retry 3 npm install -g ocm@latest; then
+  # 优先从 GitHub 安装（无需 npm publish）
+  if ! retry 3 npm install -g github:xpangjia/ocm; then
     fail "OCM 安装失败"
-    fail "请检查网络连接，或手动运行: npm install -g ocm"
+    fail "请检查网络连接，或手动运行: npm install -g github:xpangjia/ocm"
     exit 1
   fi
 
