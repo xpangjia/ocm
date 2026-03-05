@@ -60,6 +60,12 @@ retry() {
   return 1
 }
 
+# ── 0. 恢复上次安装的 PATH（重跑脚本时识别已装的 node/npm）──
+
+if [ -d "$HOME/.local/node/bin" ]; then
+  export PATH="$HOME/.local/node/bin:$PATH"
+fi
+
 # ── 1. 前置检查 ──
 
 preflight_checks() {
@@ -203,23 +209,44 @@ install_node_binary() {
 
     # 写入 shell 配置以持久化
     local shell_rc=""
-    if [ -f "$HOME/.zshrc" ]; then
+
+    # 检测用户使用的 shell，优先写对应的 rc 文件
+    case "${SHELL:-/bin/zsh}" in
+      */zsh)  shell_rc="$HOME/.zshrc" ;;
+      */bash)
+        if [ -f "$HOME/.bashrc" ]; then
+          shell_rc="$HOME/.bashrc"
+        else
+          shell_rc="$HOME/.bash_profile"
+        fi
+        ;;
+    esac
+
+    # 兜底：macOS 默认 zsh
+    if [ -z "$shell_rc" ]; then
       shell_rc="$HOME/.zshrc"
-    elif [ -f "$HOME/.bashrc" ]; then
-      shell_rc="$HOME/.bashrc"
-    elif [ -f "$HOME/.bash_profile" ]; then
-      shell_rc="$HOME/.bash_profile"
     fi
 
-    if [ -n "$shell_rc" ]; then
-      # 清理旧的 ~/.local/bin 配置（如果有）
-      if grep -q 'HOME/.local/bin.*# Node.js' "$shell_rc" 2>/dev/null; then
-        sed -i.bak '/# Node.js (installed by OCM)/d; /HOME\/.local\/bin/d' "$shell_rc" 2>/dev/null || true
-      fi
-      if ! grep -q 'HOME/.local/node/bin' "$shell_rc" 2>/dev/null; then
-        printf '\n# Node.js (installed by OCM)\nexport PATH="$HOME/.local/node/bin:$PATH"\n' >> "$shell_rc"
-        info "已将 ~/.local/node/bin 添加到 ${shell_rc}"
-      fi
+    # 文件不存在则创建
+    if [ ! -f "$shell_rc" ]; then
+      touch "$shell_rc"
+      info "创建 ${shell_rc}"
+    fi
+
+    # 写入 PATH（如果还没写过）
+    if ! grep -q '.local/node/bin' "$shell_rc" 2>/dev/null; then
+      printf '\n# Node.js (installed by OCM)\nexport PATH="$HOME/.local/node/bin:$PATH"\n' >> "$shell_rc"
+      info "已将 ~/.local/node/bin 添加到 ${shell_rc}"
+    else
+      info "PATH 已在 ${shell_rc} 中配置"
+    fi
+
+    # 验证写入成功
+    if grep -q '.local/node/bin' "$shell_rc" 2>/dev/null; then
+      success "shell 配置已更新"
+    else
+      warn "写入 ${shell_rc} 失败，请手动添加:"
+      info "  export PATH=\"\$HOME/.local/node/bin:\$PATH\""
     fi
 
     rm -rf "$tmp_dir"
@@ -486,25 +513,47 @@ run_init() {
     export PATH="$npm_global_bin:$PATH"
   fi
 
+  # 也确保 node home 在 PATH 中
+  if [ -d "$HOME/.local/node/bin" ]; then
+    export PATH="$HOME/.local/node/bin:$PATH"
+  fi
+
   # 查找 ocm 实际路径
   local ocm_bin
   ocm_bin="$(command -v ocm 2>/dev/null || echo "")"
 
-  if [ -z "$ocm_bin" ] && [ -x "$npm_global_bin/ocm" ]; then
-    ocm_bin="$npm_global_bin/ocm"
+  # 常见位置搜索
+  if [ -z "$ocm_bin" ]; then
+    for try_path in \
+      "$npm_global_bin/ocm" \
+      "$HOME/.local/node/bin/ocm" \
+      "$HOME/.local/node/lib/node_modules/.bin/ocm" \
+      "/usr/local/bin/ocm"; do
+      if [ -x "$try_path" ]; then
+        ocm_bin="$try_path"
+        break
+      fi
+    done
   fi
 
   printf "\n"
   printf "  ${GREEN}${BOLD}安装完成！${NC}\n"
+  printf "\n"
 
   if [ -n "$ocm_bin" ]; then
+    info "ocm 路径: ${ocm_bin}"
     printf "  正在启动配置向导...\n"
     printf "\n"
     exec "$ocm_bin" init
   else
+    success "OCM 已安装，但需要打开新终端才能使用"
     printf "\n"
-    warn "ocm 命令未在 PATH 中找到"
-    info "请打开新终端窗口，然后运行: ocm init"
+    info "请执行以下操作："
+    info "  1. 关闭当前终端"
+    info "  2. 打开新终端"
+    info "  3. 运行: ocm init"
+    printf "\n"
+    info "或者在当前终端运行: source ~/.zshrc && ocm init"
   fi
 }
 
