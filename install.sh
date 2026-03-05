@@ -567,37 +567,74 @@ install_ocm_from_tarball() {
   success "构建完成"
   debug "dist 内容: $(ls -la dist/ 2>/dev/null || echo 'dist 不存在')"
 
-  # 全局安装
-  info "正在全局安装..."
-  debug "npm prefix -g (安装前): $(npm prefix -g 2>/dev/null || echo '未知')"
+  # 全局安装（用 npm pack 打包再安装，避免符号链接指向临时目录）
+  info "正在打包..."
+  local packed_file
+  packed_file="$(npm pack 2>/dev/null | tail -1)"
+  debug "npm pack 输出: $packed_file"
 
-  if ! npm install -g . 2>&1; then
+  if [ -z "$packed_file" ] || [ ! -f "$src_dir/$packed_file" ]; then
+    fail "npm pack 失败"
+    debug "pack 结果文件: $packed_file"
+    debug "ls *.tgz: $(ls -la "$src_dir"/*.tgz 2>/dev/null || echo '无 tgz 文件')"
+    rm -rf "$tmp_dir"
+    exit 1
+  fi
+  debug "打包文件: $src_dir/$packed_file ($(wc -c < "$src_dir/$packed_file" 2>/dev/null) bytes)"
+
+  info "正在全局安装..."
+  local npm_global_prefix
+  npm_global_prefix="$(npm prefix -g 2>/dev/null || echo '')"
+  debug "npm prefix -g: $npm_global_prefix"
+
+  # 回到 HOME 目录，避免删除临时目录后 cwd 失效
+  local pack_path="$src_dir/$packed_file"
+  cd "$HOME"
+
+  if ! npm install -g "$pack_path" 2>&1; then
     warn "无权限，尝试 sudo..."
-    if ! sudo npm install -g . 2>&1; then
+    if ! sudo npm install -g "$pack_path" 2>&1; then
       fail "全局安装失败"
-      info "请手动运行: cd ${src_dir} && npm install -g ."
+      rm -rf "$tmp_dir"
       exit 1
     fi
   fi
 
+  # 清理临时目录
+  rm -rf "$tmp_dir"
+
   # 确保 npm 全局 bin 在 PATH 中
-  local npm_global_bin
-  npm_global_bin="$(npm prefix -g 2>/dev/null)/bin"
+  local npm_global_bin="${npm_global_prefix}/bin"
   debug "npm 全局 bin 目录: $npm_global_bin"
   debug "该目录是否存在: $([ -d "$npm_global_bin" ] && echo '是' || echo '否')"
-  debug "该目录内容: $(ls -la "$npm_global_bin/" 2>/dev/null || echo '不存在')"
 
   if [ -d "$npm_global_bin" ]; then
     export PATH="$npm_global_bin:$PATH"
     info "npm 全局目录: ${npm_global_bin}"
   fi
 
-  # 检查 ocm 是否可执行
-  debug "安装后 command -v ocm: $(command -v ocm 2>/dev/null || echo '未找到')"
-  debug "安装后 PATH: $PATH"
+  debug "该目录内容: $(ls -la "$npm_global_bin/" 2>/dev/null || echo '不存在')"
 
-  rm -rf "$tmp_dir"
-  success "OCM 安装完成"
+  # 验证 ocm 安装结果
+  debug "安装后 command -v ocm: $(command -v ocm 2>/dev/null || echo '未找到')"
+
+  # 检查全局 node_modules 中 ocm 是否是真实文件而非断裂的符号链接
+  local ocm_global_dir="${npm_global_prefix}/lib/node_modules/ocm"
+  debug "ocm 全局目录: $ocm_global_dir"
+  debug "ocm 全局目录类型: $(file "$ocm_global_dir" 2>/dev/null || echo '不存在')"
+  if [ -d "$ocm_global_dir" ]; then
+    debug "ocm dist/index.js 存在: $([ -f "$ocm_global_dir/dist/index.js" ] && echo '是' || echo '否')"
+    debug "ocm dist/index.js 首行: $(head -1 "$ocm_global_dir/dist/index.js" 2>/dev/null || echo '读取失败')"
+  else
+    debug "ocm 全局目录详情: $(ls -la "${npm_global_prefix}/lib/node_modules/" 2>/dev/null | grep ocm || echo 'ocm 不在 node_modules 中')"
+  fi
+
+  # 验证 ocm 命令可用
+  if command_exists ocm; then
+    success "OCM $(ocm --version 2>/dev/null || echo '') 安装完成"
+  else
+    warn "OCM 文件已安装，但命令暂时不可用（需要刷新终端环境）"
+  fi
 }
 
 # ── 6. 启动向导 ──
