@@ -1,6 +1,25 @@
 import * as p from "@clack/prompts";
-import { success, error } from "../utils/ui.js";
-import { restartGateway, stopGateway, isGatewayRunning } from "../core/process.js";
+import { success, error, info } from "../utils/ui.js";
+import { restartGateway, startGateway, stopGateway, isGatewayRunning } from "../core/process.js";
+
+export async function startCommand(): Promise<void> {
+  const status = isGatewayRunning();
+  if (status.running) {
+    info(`Gateway 已在运行中 (PID: ${status.pid})`);
+    return;
+  }
+
+  const s = p.spinner();
+  s.start("正在启动 Gateway...");
+  const ok = await startGateway();
+  if (ok) {
+    s.stop("Gateway 已启动");
+    success("启动完成");
+  } else {
+    s.stop("启动失败");
+    error("请检查 OpenClaw 是否正确安装: ocm doctor");
+  }
+}
 
 export async function restartCommand(): Promise<void> {
   const s = p.spinner();

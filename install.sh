@@ -897,25 +897,25 @@ run_init() {
     info "ocm 路径: ${ocm_bin}"
     printf "  正在启动配置向导...\n"
     printf "\n"
-    exec "$ocm_bin" init
+    # 不用 exec，init 结束后还能打印后续提示
+    "$ocm_bin" init || true
   else
-    success "OCM 已安装，但需要刷新终端环境才能使用"
-    printf "\n"
-    info "请执行以下操作："
-    info "  1. 关闭当前终端"
-    info "  2. 打开新终端"
-    info "  3. 运行: ocm init"
-    printf "\n"
-    info "或者在当前终端运行:"
-    info "  source ~/.zshrc && ocm init"
-    printf "\n"
-
     debug "=== 诊断信息 ==="
     debug "npm prefix -g: $(npm prefix -g 2>/dev/null || echo '未知')"
     debug "ls npm_global_bin: $(ls -la "$npm_global_bin/" 2>/dev/null | grep ocm || echo 'ocm 不在 npm 全局目录')"
     debug "ls ~/.local/node/bin: $(ls -la "$HOME/.local/node/bin/" 2>/dev/null | grep ocm || echo 'ocm 不在 node bin')"
     debug "find ocm: $(find "$HOME/.local" -name "ocm" -type f 2>/dev/null | head -5 || echo '未找到')"
   fi
+
+  # 最终提示：当前窗口需要 source 才能使用 ocm 命令
+  printf "\n"
+  printf "  ${YELLOW}${BOLD}提示${NC}\n"
+  printf "  当前终端窗口需要刷新环境才能直接使用 ocm 命令：\n"
+  printf "\n"
+  printf "  ${CYAN}source ~/.zshrc${NC}\n"
+  printf "\n"
+  printf "  新打开的终端窗口会自动生效。\n"
+  printf "\n"
 }
 
 # ── 主函数 ──

@@ -3,7 +3,7 @@ import { initCommand } from "./commands/init.js";
 import { modelSwitch, modelAdd, modelList, modelRemove, modelCurrent } from "./commands/model.js";
 import { statusCommand } from "./commands/status.js";
 import { doctorCommand } from "./commands/doctor.js";
-import { restartCommand, stopCommand } from "./commands/restart.js";
+import { startCommand, restartCommand, stopCommand } from "./commands/restart.js";
 import { updateCommand } from "./commands/update.js";
 import { backupCommand, backupListCommand, backupRestoreCommand } from "./commands/backup.js";
 import { configShowCommand, configGetCommand, configSetCommand } from "./commands/config.js";
@@ -71,6 +71,12 @@ program
   .command("doctor")
   .description("环境诊断")
   .action(doctorCommand);
+
+// ocm start
+program
+  .command("start")
+  .description("启动 Gateway（如果没有运行）")
+  .action(startCommand);
 
 // ocm restart
 program

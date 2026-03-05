@@ -1,11 +1,12 @@
 import * as p from "@clack/prompts";
 import { header, success, error, info, cancelled, isCancel, pc } from "../utils/ui.js";
-import { CN_PROVIDERS, GLOBAL_PROVIDERS, LOCAL_PROVIDERS, getProvider } from "../registry/index.js";
+import { CN_PROVIDERS, GLOBAL_PROVIDERS, LOCAL_PROVIDERS, CUSTOM_PROVIDERS, getProvider } from "../registry/index.js";
 import { validateApiKey } from "../core/validator.js";
 import { addProvider, setCurrentModel, writeConfig, ensureOcmDir } from "../core/ocm-config.js";
 import { setEnvVar, setActiveModel, addCustomProvider } from "../core/openclaw-config.js";
-import { run, which } from "../utils/shell.js";
+import { run, which, exec } from "../utils/shell.js";
 import { startGateway, getOpenClawVersion } from "../core/process.js";
+import { debug } from "../utils/logger.js";
 import type { ProviderTemplate } from "../registry/types.js";
 
 export async function initCommand(): Promise<void> {
@@ -22,6 +23,15 @@ export async function initCommand(): Promise<void> {
 
   // 2. 安装 OpenClaw（如果没有）
   if (!which("openclaw")) {
+    // 打印安装环境信息（便于诊断）
+    const npmRegistry = exec("npm config get registry").trim();
+    const npmPrefix = exec("npm prefix -g").trim();
+    debug(`npm registry: ${npmRegistry}`);
+    debug(`npm prefix -g: ${npmPrefix}`);
+    debug(`PATH: ${process.env.PATH ?? ""}`);
+    info(`npm 镜像源: ${npmRegistry}`);
+    info(`npm 全局目录: ${npmPrefix}`);
+
     const s = p.spinner();
     s.start("正在安装 OpenClaw...");
 
@@ -57,6 +67,12 @@ export async function initCommand(): Promise<void> {
     hint: p.models.map((m) => m.id).join(", ") || undefined,
   }));
 
+  const customOptions = CUSTOM_PROVIDERS.map((p) => ({
+    value: p.id,
+    label: `${p.nameZh} (${p.name})`,
+    hint: "自定义 Base URL + API Key",
+  }));
+
   const providerId = await p.select({
     message: "选择 AI 模型提供商",
     options: [
@@ -66,6 +82,8 @@ export async function initCommand(): Promise<void> {
       ...globalOptions,
       { value: "_local_header", label: pc.bold("── 本地 ──") },
       ...localOptions,
+      { value: "_custom_header", label: pc.bold("── 自定义/中转站 ──") },
+      ...customOptions,
     ],
   });
 
@@ -82,6 +100,19 @@ export async function initCommand(): Promise<void> {
   }
 
   await configureProvider(provider);
+
+  // 3.5 确认配置，不满意可以重新选择
+  const confirmOk = await p.confirm({
+    message: `已配置 ${provider.nameZh}，确认继续？（选 No 可重新选择提供商）`,
+    initialValue: true,
+  });
+
+  if (isCancel(confirmOk)) return cancelled();
+  if (!confirmOk) {
+    info("重新选择提供商...");
+    // 递归调用 init，重来一遍
+    return initCommand();
+  }
 
   // 4. 启动 Gateway
   const sg = p.spinner();
@@ -110,10 +141,38 @@ export async function initCommand(): Promise<void> {
 export async function configureProvider(provider: ProviderTemplate): Promise<void> {
   let apiKey = "";
 
+  // 自定义提供商（中转站）：需要额外输入 baseUrl 和模型名
+  if (provider.id.startsWith("custom-")) {
+    const baseUrlInput = await p.text({
+      message: "请输入 API Base URL",
+      placeholder: "例如: https://your-relay.example.com/v1",
+      validate: (val) => {
+        if (!val.trim()) return "Base URL 不能为空";
+        if (!val.startsWith("http")) return "请输入完整 URL（以 http:// 或 https:// 开头）";
+      },
+    });
+    if (isCancel(baseUrlInput)) return cancelled();
+    provider = { ...provider, baseUrl: (baseUrlInput as string).replace(/\/+$/, "") };
+
+    const modelInput = await p.text({
+      message: "请输入模型名称",
+      placeholder: "例如: gpt-4o, claude-sonnet-4-20250514",
+      validate: (val) => {
+        if (!val.trim()) return "模型名称不能为空";
+      },
+    });
+    if (isCancel(modelInput)) return cancelled();
+    const modelName = (modelInput as string).trim();
+    provider = {
+      ...provider,
+      models: [{ id: modelName, name: modelName, reasoning: false }],
+    };
+  }
+
   // 获取 API Key（除非是 OAuth 或无需认证）
   if (provider.authType === "api-key") {
     const keyInput = await p.text({
-      message: `请输入 ${provider.name} API Key`,
+      message: `请输入 ${provider.id.startsWith("custom-") ? "API Key" : `${provider.name} API Key`}`,
       placeholder: provider.keyGuide,
       validate: (val) => {
         if (!val.trim()) return "API Key 不能为空";
