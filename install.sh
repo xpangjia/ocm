@@ -91,7 +91,7 @@ debug "command -v ocm: $(command -v ocm 2>/dev/null || echo '未找到')"
 # ── 1. 前置检查 ──
 
 preflight_checks() {
-  step "[1/7] 环境检测"
+  step "[1/8] 环境检测"
 
   local os
   os="$(uname -s)"
@@ -127,7 +127,7 @@ preflight_checks() {
 # ── 2. 网络检测 ──
 
 detect_network() {
-  step "[2/7] 网络检测"
+  step "[2/8] 网络检测"
 
   if curl -sI https://registry.npmjs.org --max-time 3 > /dev/null 2>&1; then
     IS_CHINA=false
@@ -142,7 +142,7 @@ detect_network() {
 # ── 3. 配置镜像 ──
 
 setup_mirrors() {
-  step "[3/7] 配置镜像源"
+  step "[3/8] 配置镜像源"
 
   if [ "$IS_CHINA" = true ]; then
     local npm_mirror="${OCM_MIRROR:-https://registry.npmmirror.com}"
@@ -161,10 +161,112 @@ setup_mirrors() {
   fi
 }
 
-# ── 4. Git ──
+# ── 4. Homebrew (macOS) ──
+
+ensure_brew() {
+  # 仅 macOS 需要安装 Homebrew
+  if [ "$(uname -s)" != "Darwin" ]; then
+    debug "非 macOS，跳过 Homebrew"
+    return
+  fi
+
+  step "[4/8] 检测 Homebrew"
+
+  if command_exists brew; then
+    success "Homebrew $(brew --version 2>/dev/null | head -1 | sed 's/Homebrew //' ) 已安装"
+    debug "brew 路径: $(command -v brew)"
+
+    # 国内镜像：设置 brew 源加速
+    if [ "$IS_CHINA" = true ]; then
+      export HOMEBREW_API_DOMAIN="https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/api"
+      export HOMEBREW_BREW_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/brew.git"
+      export HOMEBREW_CORE_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/homebrew-core.git"
+      export HOMEBREW_BOTTLE_DOMAIN="https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles"
+      debug "已设置 Homebrew 清华镜像"
+    fi
+    return
+  fi
+
+  info "正在安装 Homebrew..."
+
+  if [ "$IS_CHINA" = true ]; then
+    # 国内：使用 ineo6 维护的国内镜像安装脚本
+    info "使用国内镜像安装 Homebrew..."
+    export HOMEBREW_API_DOMAIN="https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/api"
+    export HOMEBREW_BREW_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/brew.git"
+    export HOMEBREW_CORE_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/homebrew-core.git"
+    export HOMEBREW_BOTTLE_DOMAIN="https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles"
+
+    local brew_install_url="https://gitee.com/ineo6/homebrew-install/raw/master/install.sh"
+    debug "brew 安装脚本: $brew_install_url"
+
+    if NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL --max-time 30 "$brew_install_url")" 2>&1; then
+      debug "brew 安装脚本执行完成"
+    else
+      warn "国内镜像安装失败，尝试官方脚本..."
+      # 降级到官方脚本
+      if NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL --max-time 60 https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" 2>&1; then
+        debug "官方脚本安装完成"
+      else
+        warn "Homebrew 安装失败，后续步骤将使用其他方式"
+        return
+      fi
+    fi
+  else
+    # 海外：官方安装脚本
+    debug "使用官方脚本安装 Homebrew"
+    if NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL --max-time 60 https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" 2>&1; then
+      debug "官方脚本安装完成"
+    else
+      warn "Homebrew 安装失败，后续步骤将使用其他方式"
+      return
+    fi
+  fi
+
+  # brew 安装后需要配置 PATH（Apple Silicon 装在 /opt/homebrew，Intel 在 /usr/local）
+  if [ -x "/opt/homebrew/bin/brew" ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+    debug "Apple Silicon: eval brew shellenv"
+  elif [ -x "/usr/local/bin/brew" ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+    debug "Intel Mac: eval brew shellenv"
+  fi
+
+  if command_exists brew; then
+    success "Homebrew 安装完成"
+    debug "brew 路径: $(command -v brew)"
+
+    # 将 brew shellenv 写入 shell 配置
+    local shell_rc=""
+    local user_shell="${SHELL:-/bin/zsh}"
+    case "$user_shell" in
+      */zsh)  shell_rc="$HOME/.zshrc" ;;
+      */bash) shell_rc="$HOME/.bash_profile" ;;
+    esac
+    [ -z "$shell_rc" ] && shell_rc="$HOME/.zshrc"
+
+    # 文件不存在则创建
+    [ ! -f "$shell_rc" ] && touch "$shell_rc"
+
+    if ! grep -q 'brew shellenv' "$shell_rc" 2>/dev/null; then
+      if [ -x "/opt/homebrew/bin/brew" ]; then
+        printf '\n# Homebrew (installed by OCM)\neval "$(/opt/homebrew/bin/brew shellenv)"\n' >> "$shell_rc"
+      elif [ -x "/usr/local/bin/brew" ]; then
+        printf '\n# Homebrew (installed by OCM)\neval "$(/usr/local/bin/brew shellenv)"\n' >> "$shell_rc"
+      fi
+      info "已将 Homebrew 添加到 ${shell_rc}"
+    fi
+  else
+    warn "Homebrew 安装可能未完成，后续步骤将使用其他方式"
+    debug "检查 /opt/homebrew/bin/brew: $([ -x "/opt/homebrew/bin/brew" ] && echo '存在' || echo '不存在')"
+    debug "检查 /usr/local/bin/brew: $([ -x "/usr/local/bin/brew" ] && echo '存在' || echo '不存在')"
+  fi
+}
+
+# ── 5. Git ──
 
 ensure_git() {
-  step "[4/7] 检测 Git"
+  step "[5/8] 检测 Git"
 
   if command_exists git; then
     success "git $(git --version 2>/dev/null | sed 's/git version //') 已安装"
@@ -174,25 +276,24 @@ ensure_git() {
 
   warn "未找到 git（OpenClaw 安装需要 git）"
 
-  # macOS: 避免触发 Xcode CLT 弹窗（巨慢），优先用其他方式装 git
+  # macOS: 优先用 brew（ensure_brew 已保证 brew 可用），避免触发 Xcode CLT 弹窗
   if [ "$(uname -s)" = "Darwin" ]; then
-    # 方式 1: brew
+    # 方式 1: brew install git（推荐，有了 ensure_brew 这里几乎 100% 能走通）
     if command_exists brew; then
       info "使用 Homebrew 安装 git..."
       if brew install git 2>&1; then
-        success "git 安装完成 (via brew)"
+        success "git $(git --version 2>/dev/null | sed 's/git version //') 安装完成 (via brew)"
         return
       fi
       warn "brew install git 失败"
     fi
 
-    # 方式 2: 从国内镜像下载 git 安装包
-    info "正在下载 git 安装包..."
+    # 方式 2: 降级 — 从 SourceForge 下载 git 安装包
+    info "正在下载 git 安装包（备用方式）..."
     local git_pkg_url="https://sourceforge.net/projects/git-osx-installer/files/latest/download"
     local tmp_git
     tmp_git="$(mktemp -d)"
 
-    # sourceforge 国内基本能访问
     if curl -fsSL --max-time 60 -o "${tmp_git}/git-installer.dmg" "$git_pkg_url" 2>/dev/null; then
       info "正在安装 git（可能需要输入密码）..."
       hdiutil attach "${tmp_git}/git-installer.dmg" -quiet -mountpoint "${tmp_git}/git-mount" 2>/dev/null || true
@@ -211,7 +312,7 @@ ensure_git() {
     fi
     rm -rf "$tmp_git" 2>/dev/null || true
 
-    # 方式 3: 提示用户手动触发 CLT（作为最后手段）
+    # 方式 3: 最后手段 — Xcode CLT
     warn "自动安装 git 失败"
     info "请在弹出的对话框中点击「安装」安装 Command Line Tools"
     info "（这会安装 git，安装完成后重新运行此脚本）"
@@ -248,7 +349,7 @@ ensure_git() {
   exit 1
 }
 
-# ── 5. Node.js ──
+# ── 6. Node.js ──
 
 install_node_binary() {
   local node_mirror="${OCM_NODE_MIRROR:-https://npmmirror.com/mirrors/node/}"
@@ -422,7 +523,7 @@ persist_path_to_shell_rc() {
 }
 
 ensure_nodejs() {
-  step "[5/7] 检测 Node.js"
+  step "[6/8] 检测 Node.js"
 
   debug "检查 node 命令..."
   if command_exists node; then
@@ -524,10 +625,10 @@ ensure_nodejs() {
   exit 1
 }
 
-# ── 5. 安装 OCM ──
+# ── 7. 安装 OCM ──
 
 install_ocm() {
-  step "[6/7] 安装 OCM"
+  step "[7/8] 安装 OCM"
 
   debug "检查 ocm 命令: $(command -v ocm 2>/dev/null || echo '未找到')"
 
@@ -724,10 +825,10 @@ install_ocm_from_tarball() {
   fi
 }
 
-# ── 7. 启动向导 ──
+# ── 8. 启动向导 ──
 
 run_init() {
-  step "[7/7] 启动向导"
+  step "[8/8] 启动向导"
   debug "=== run_init 开始 ==="
 
   # 确保各种 bin 目录在 PATH 中
@@ -817,6 +918,7 @@ main() {
   preflight_checks
   detect_network
   setup_mirrors
+  ensure_brew
   ensure_git
   ensure_nodejs
   install_ocm
