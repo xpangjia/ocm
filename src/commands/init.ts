@@ -104,7 +104,7 @@ export async function configureProvider(provider: ProviderTemplate): Promise<voi
       },
     });
     if (isCancel(baseUrlInput)) return cancelled();
-    provider = { ...provider, baseUrl: (baseUrlInput as string).replace(/\/+$/, "") };
+    provider = { ...provider, baseUrl: (baseUrlInput as string).trim().replace(/\/+$/, "") };
 
     const modelInput = await p.text({
       message: "请输入模型名称",
