@@ -12,12 +12,14 @@ set -euo pipefail
 #   OCM_MIRROR        自定义 npm 镜像
 #   OCM_NODE_MIRROR   自定义 Node.js 二进制镜像
 #   OCM_GITHUB_PROXY  自定义 GitHub 代理
+#   OCM_DEBUG=0       关闭调试日志（默认开启）
 #   NONINTERACTIVE=1  无人值守模式
 # ===================================================================
 
 VERSION="0.1.0"
 REQUIRED_NODE_MAJOR=22
 IS_CHINA=false
+OCM_DEBUG="${OCM_DEBUG:-1}"
 
 # ── 颜色 ──
 
@@ -36,6 +38,13 @@ success() { printf "  ${GREEN}✔${NC} %s\n" "$1"; }
 warn()    { printf "  ${YELLOW}⚠${NC} %s\n" "$1"; }
 fail()    { printf "  ${RED}✘${NC} %s\n" "$1"; }
 step()    { printf "\n  ${BOLD}%s${NC}\n" "$1"; }
+
+# 调试日志：OCM_DEBUG=1 时输出，OCM_DEBUG=0 关闭
+debug() {
+  if [ "$OCM_DEBUG" = "1" ]; then
+    printf "  ${DIM}[debug] %s${NC}\n" "$1"
+  fi
+}
 
 # ── 工具函数 ──
 
@@ -60,22 +69,37 @@ retry() {
   return 1
 }
 
-# ── 0. 恢复上次安装的 PATH（重跑脚本时识别已装的 node/npm）──
+# ── 0. 恢复上次安装的 PATH ──
+
+debug "初始 PATH: $PATH"
+debug "HOME: $HOME"
+debug "SHELL: ${SHELL:-未设置}"
+debug "当前用户: $(whoami)"
 
 if [ -d "$HOME/.local/node/bin" ]; then
   export PATH="$HOME/.local/node/bin:$PATH"
+  debug "检测到 ~/.local/node/bin，已加入 PATH"
+else
+  debug "~/.local/node/bin 不存在"
 fi
+
+# 检查已存在的 node/npm/ocm
+debug "command -v node: $(command -v node 2>/dev/null || echo '未找到')"
+debug "command -v npm: $(command -v npm 2>/dev/null || echo '未找到')"
+debug "command -v ocm: $(command -v ocm 2>/dev/null || echo '未找到')"
 
 # ── 1. 前置检查 ──
 
 preflight_checks() {
   step "[1/5] 环境检测"
 
-  # OS 检测
   local os
   os="$(uname -s)"
   local arch
   arch="$(uname -m)"
+
+  debug "uname -s: $os"
+  debug "uname -m: $arch"
 
   case "$os" in
     Darwin) info "系统: macOS ($arch)" ;;
@@ -88,17 +112,16 @@ preflight_checks() {
       ;;
     *)
       fail "不支持的操作系统: $os"
-      fail "macOS/Linux 用此脚本，Windows 请用 PowerShell 脚本："
-      info "  irm https://raw.githubusercontent.com/xpangjia/ocm/main/install.ps1 | iex"
       exit 1
       ;;
   esac
 
-  # curl 检测
   if ! command_exists curl; then
     fail "未找到 curl，请先安装"
     exit 1
   fi
+
+  debug "curl 路径: $(command -v curl)"
 }
 
 # ── 2. 网络检测 ──
@@ -113,6 +136,7 @@ detect_network() {
     IS_CHINA=true
     warn "国际源不可达，自动切换国内镜像"
   fi
+  debug "IS_CHINA=$IS_CHINA"
 }
 
 # ── 3. 配置镜像 ──
@@ -130,6 +154,8 @@ setup_mirrors() {
 
     success "npm 镜像: $npm_mirror"
     success "Node.js 镜像: $node_mirror"
+
+    debug "npm config get registry: $(npm config get registry 2>/dev/null || echo '失败')"
   else
     success "使用默认源"
   fi
@@ -137,7 +163,6 @@ setup_mirrors() {
 
 # ── 4. Node.js ──
 
-# 直接从镜像下载 Node.js 二进制（国内网络降级方案）
 install_node_binary() {
   local node_mirror="${OCM_NODE_MIRROR:-https://npmmirror.com/mirrors/node/}"
   local os arch_name
@@ -146,13 +171,11 @@ install_node_binary() {
   local machine
   machine="$(uname -m)"
 
-  # 确定平台名
   case "$os" in
     Darwin) os="darwin" ;;
     Linux)  os="linux" ;;
   esac
 
-  # 确定架构名
   case "$machine" in
     x86_64)  arch_name="x64" ;;
     aarch64|arm64) arch_name="arm64" ;;
@@ -164,7 +187,6 @@ install_node_binary() {
 
   local node_ver="v${REQUIRED_NODE_MAJOR}.0.0"
 
-  # 先获取实际最新 LTS 版本号
   info "查询 Node.js ${REQUIRED_NODE_MAJOR}.x 最新版本..."
   local latest_ver
   latest_ver=$(curl -fsSL "${node_mirror}index.json" 2>/dev/null \
@@ -175,6 +197,7 @@ install_node_binary() {
   if [ -n "$latest_ver" ]; then
     node_ver="$latest_ver"
   fi
+  debug "目标 Node.js 版本: $node_ver"
 
   local tarball="node-${node_ver}-${os}-${arch_name}.tar.gz"
   local url="${node_mirror}${node_ver}/${tarball}"
@@ -184,6 +207,7 @@ install_node_binary() {
 
   local tmp_dir
   tmp_dir="$(mktemp -d)"
+  debug "临时目录: $tmp_dir"
 
   if ! curl -fsSL --max-time 120 -o "${tmp_dir}/${tarball}" "$url"; then
     rm -rf "$tmp_dir"
@@ -191,104 +215,156 @@ install_node_binary() {
     return 1
   fi
 
-  # 解压到临时目录
+  local tarball_size
+  tarball_size=$(wc -c < "${tmp_dir}/${tarball}" 2>/dev/null || echo "0")
+  debug "tarball 大小: ${tarball_size} bytes"
+
+  # 解压
   tar -xzf "${tmp_dir}/${tarball}" -C "$tmp_dir"
   local extracted_dir="${tmp_dir}/node-${node_ver}-${os}-${arch_name}"
 
-  # 整体移动到 ~/.local/node/（保持原始目录结构，避免符号链接断裂）
+  debug "解压目录: $extracted_dir"
+  debug "解压内容: $(ls "$extracted_dir" 2>/dev/null || echo '目录不存在')"
+  debug "bin 内容: $(ls -la "$extracted_dir/bin/" 2>/dev/null || echo 'bin 目录不存在')"
+
+  # 整体移动到 ~/.local/node/
   local node_home="$HOME/.local/node"
   info "正在安装到 ${node_home}/ ..."
 
-  # 清理旧安装
   rm -rf "$node_home" 2>/dev/null || true
   mkdir -p "$HOME/.local" 2>/dev/null || true
 
   if mv "$extracted_dir" "$node_home" 2>/dev/null; then
+    debug "mv 成功: $extracted_dir -> $node_home"
+    debug "node_home 内容: $(ls "$node_home" 2>/dev/null)"
+    debug "node_home/bin 内容: $(ls -la "$node_home/bin/" 2>/dev/null)"
+
     # 将 node bin 目录加入 PATH
     export PATH="$node_home/bin:$PATH"
+    debug "更新后 PATH: $PATH"
 
-    # 写入 shell 配置以持久化
-    local shell_rc=""
-
-    # 检测用户使用的 shell，优先写对应的 rc 文件
-    case "${SHELL:-/bin/zsh}" in
-      */zsh)  shell_rc="$HOME/.zshrc" ;;
-      */bash)
-        if [ -f "$HOME/.bashrc" ]; then
-          shell_rc="$HOME/.bashrc"
-        else
-          shell_rc="$HOME/.bash_profile"
-        fi
-        ;;
-    esac
-
-    # 兜底：macOS 默认 zsh
-    if [ -z "$shell_rc" ]; then
-      shell_rc="$HOME/.zshrc"
-    fi
-
-    # 文件不存在则创建
-    if [ ! -f "$shell_rc" ]; then
-      touch "$shell_rc"
-      info "创建 ${shell_rc}"
-    fi
-
-    # 写入 PATH（如果还没写过）
-    if ! grep -q '.local/node/bin' "$shell_rc" 2>/dev/null; then
-      printf '\n# Node.js (installed by OCM)\nexport PATH="$HOME/.local/node/bin:$PATH"\n' >> "$shell_rc"
-      info "已将 ~/.local/node/bin 添加到 ${shell_rc}"
-    else
-      info "PATH 已在 ${shell_rc} 中配置"
-    fi
-
-    # 验证写入成功
-    if grep -q '.local/node/bin' "$shell_rc" 2>/dev/null; then
-      success "shell 配置已更新"
-    else
-      warn "写入 ${shell_rc} 失败，请手动添加:"
-      info "  export PATH=\"\$HOME/.local/node/bin:\$PATH\""
-    fi
+    # ── 写入 shell 配置 ──
+    persist_path_to_shell_rc
 
     rm -rf "$tmp_dir"
 
     # 验证
+    debug "验证 node: $(command -v node 2>/dev/null || echo '未找到')"
+    debug "验证 npm: $(command -v npm 2>/dev/null || echo '未找到')"
+
     if command_exists node && command_exists npm; then
       success "Node.js $(node --version) 安装完成"
       success "npm $(npm --version)"
+      debug "node 实际路径: $(command -v node)"
+      debug "npm 实际路径: $(command -v npm)"
+      debug "npm prefix -g: $(npm prefix -g 2>/dev/null || echo '失败')"
       return 0
     else
       fail "Node.js 安装后验证失败"
+      debug "PATH: $PATH"
+      debug "ls node_home/bin: $(ls -la "$node_home/bin/" 2>/dev/null || echo '不存在')"
       info "请手动将 ${node_home}/bin 添加到 PATH"
       return 1
     fi
   else
     rm -rf "$tmp_dir"
     fail "无法移动 Node.js 到 ${node_home}"
-    info "请手动安装: brew install node@${REQUIRED_NODE_MAJOR} 或访问 https://nodejs.org/"
+    debug "mv 失败: $extracted_dir -> $node_home"
+    debug "权限: $(ls -la "$HOME/.local/" 2>/dev/null)"
     return 1
+  fi
+}
+
+# 将 PATH 持久化写入 shell 配置文件
+persist_path_to_shell_rc() {
+  local shell_rc=""
+
+  # 检测用户使用的 shell
+  local user_shell="${SHELL:-/bin/zsh}"
+  debug "用户 SHELL: $user_shell"
+
+  case "$user_shell" in
+    */zsh)  shell_rc="$HOME/.zshrc" ;;
+    */bash)
+      if [ -f "$HOME/.bashrc" ]; then
+        shell_rc="$HOME/.bashrc"
+      else
+        shell_rc="$HOME/.bash_profile"
+      fi
+      ;;
+  esac
+
+  # 兜底：macOS 默认 zsh
+  if [ -z "$shell_rc" ]; then
+    shell_rc="$HOME/.zshrc"
+  fi
+
+  debug "目标 rc 文件: $shell_rc"
+  debug "rc 文件是否存在: $([ -f "$shell_rc" ] && echo '是' || echo '否')"
+
+  # 文件不存在则创建
+  if [ ! -f "$shell_rc" ]; then
+    touch "$shell_rc"
+    info "创建 ${shell_rc}"
+    debug "touch 结果: $(ls -la "$shell_rc" 2>/dev/null)"
+  fi
+
+  # 写入前：检查文件当前内容
+  debug "rc 文件当前行数: $(wc -l < "$shell_rc" 2>/dev/null || echo '0')"
+  debug "rc 文件中是否有 .local/node: $(grep '.local/node' "$shell_rc" 2>/dev/null || echo '无')"
+
+  # 写入 PATH（如果还没写过）
+  if ! grep -q '.local/node/bin' "$shell_rc" 2>/dev/null; then
+    printf '\n# Node.js (installed by OCM)\nexport PATH="$HOME/.local/node/bin:$PATH"\n' >> "$shell_rc"
+    info "已将 ~/.local/node/bin 添加到 ${shell_rc}"
+    debug "写入后验证: $(grep '.local/node' "$shell_rc" 2>/dev/null || echo '写入失败！')"
+  else
+    info "PATH 已在 ${shell_rc} 中配置"
+  fi
+
+  # 最终验证
+  if grep -q '.local/node/bin' "$shell_rc" 2>/dev/null; then
+    success "shell 配置已更新"
+    debug "rc 文件最后 3 行: $(tail -3 "$shell_rc" 2>/dev/null)"
+  else
+    warn "写入 ${shell_rc} 失败"
+    debug "rc 文件权限: $(ls -la "$shell_rc" 2>/dev/null)"
+    debug "磁盘空间: $(df -h "$HOME" 2>/dev/null | tail -1)"
+    info "请手动添加: export PATH=\"\$HOME/.local/node/bin:\$PATH\""
   fi
 }
 
 ensure_nodejs() {
   step "[4/5] 检测 Node.js"
 
+  debug "检查 node 命令..."
   if command_exists node; then
     local node_version
     node_version="$(node --version)"
     local node_major
     node_major="$(echo "$node_version" | sed 's/v\([0-9]*\).*/\1/')"
 
+    debug "已安装 Node.js: $node_version (major=$node_major), 路径: $(command -v node)"
+
     if [ "$node_major" -ge "$REQUIRED_NODE_MAJOR" ]; then
       success "Node.js $node_version 已安装"
+      debug "npm 版本: $(npm --version 2>/dev/null || echo '未找到')"
+      debug "npm prefix -g: $(npm prefix -g 2>/dev/null || echo '未知')"
       return
     else
       warn "Node.js $node_version 版本过低（需要 ≥ $REQUIRED_NODE_MAJOR）"
     fi
   else
     warn "未找到 Node.js"
+    debug "PATH 中无 node: $PATH"
   fi
 
   info "正在安装 Node.js $REQUIRED_NODE_MAJOR..."
+
+  # 检查已有的版本管理器
+  debug "fnm: $(command -v fnm 2>/dev/null || echo '未安装')"
+  debug "nvm: $(command -v nvm 2>/dev/null || echo '未安装') | ~/.nvm/nvm.sh 存在: $([ -s "$HOME/.nvm/nvm.sh" ] && echo '是' || echo '否')"
+  debug "brew: $(command -v brew 2>/dev/null || echo '未安装')"
 
   # 优先用已有的 fnm
   if command_exists fnm; then
@@ -310,7 +386,7 @@ ensure_nodejs() {
     return
   fi
 
-  # macOS 有 brew → 用 brew 装 fnm 然后装 Node
+  # macOS 有 brew → 用 brew 装 fnm
   if [ "$(uname -s)" = "Darwin" ] && command_exists brew; then
     info "使用 Homebrew 安装 fnm..."
     brew install fnm
@@ -322,25 +398,21 @@ ensure_nodejs() {
     return
   fi
 
-  # 国内网络：直接从 npmmirror 下载 Node.js 二进制（不依赖 fnm.vercel.app）
+  # 国内网络：直接下载二进制
   if [ "$IS_CHINA" = true ]; then
     info "国内网络，直接下载 Node.js 二进制..."
     if install_node_binary; then
       return
     fi
-    # 降级：尝试 fnm
     warn "二进制安装失败，尝试 fnm..."
   fi
 
   # 海外网络（或国内降级）：安装 fnm
   info "正在安装 fnm (Fast Node Manager)..."
-
   local fnm_url="https://fnm.vercel.app/install"
   if curl -fsSL --max-time 15 "$fnm_url" 2>/dev/null | bash -s -- --skip-shell; then
-    # 加载 fnm
     export PATH="$HOME/.local/share/fnm:$PATH"
     eval "$(fnm env)" 2>/dev/null || true
-
     if command_exists fnm; then
       fnm install "$REQUIRED_NODE_MAJOR"
       fnm use "$REQUIRED_NODE_MAJOR"
@@ -362,7 +434,6 @@ ensure_nodejs() {
   fail "Node.js 安装失败"
   fail "请手动安装 Node.js ≥ $REQUIRED_NODE_MAJOR: https://nodejs.org/"
   info "macOS: brew install node@$REQUIRED_NODE_MAJOR"
-  info "Ubuntu/Debian: curl -fsSL https://deb.nodesource.com/setup_${REQUIRED_NODE_MAJOR}.x | sudo -E bash - && sudo apt-get install -y nodejs"
   exit 1
 }
 
@@ -370,6 +441,8 @@ ensure_nodejs() {
 
 install_ocm() {
   step "[5/5] 安装 OCM"
+
+  debug "检查 ocm 命令: $(command -v ocm 2>/dev/null || echo '未找到')"
 
   if command_exists ocm; then
     local current_ver
@@ -379,6 +452,9 @@ install_ocm() {
   fi
 
   info "正在安装 OCM..."
+  debug "npm 路径: $(command -v npm 2>/dev/null || echo '未找到')"
+  debug "npm prefix -g: $(npm prefix -g 2>/dev/null || echo '未知')"
+  debug "npm config get registry: $(npm config get registry 2>/dev/null || echo '未知')"
 
   # 海外网络：直接从 GitHub 安装
   if [ "$IS_CHINA" = false ]; then
@@ -389,15 +465,13 @@ install_ocm() {
     warn "GitHub 安装失败，尝试 tarball 方式..."
   fi
 
-  # 国内网络（或海外降级）：下载 tarball → 本地构建 → 全局安装
+  # 国内网络：tarball 方式
   install_ocm_from_tarball
 }
 
-# 通过 tarball 下载安装 OCM（不直接依赖 git clone GitHub）
 install_ocm_from_tarball() {
   local repo_url="https://github.com/xpangjia/ocm/archive/refs/heads/main.tar.gz"
 
-  # GitHub 代理列表（国内可用的镜像）
   local proxies=(
     "https://ghfast.top/"
     "https://gh-proxy.com/"
@@ -408,9 +482,10 @@ install_ocm_from_tarball() {
   tmp_dir="$(mktemp -d)"
   local downloaded=false
 
+  debug "tarball 临时目录: $tmp_dir"
+
   # 国内：依次尝试多个代理
   if [ "$IS_CHINA" = true ]; then
-    # 允许用户自定义代理
     if [ -n "${OCM_GITHUB_PROXY:-}" ]; then
       proxies=("$OCM_GITHUB_PROXY" "${proxies[@]}")
     fi
@@ -446,11 +521,18 @@ install_ocm_from_tarball() {
     exit 1
   fi
 
+  local tarball_size
+  tarball_size=$(wc -c < "${tmp_dir}/ocm.tar.gz" 2>/dev/null || echo "0")
+  debug "OCM tarball 大小: ${tarball_size} bytes"
+
   # 解压
   tar -xzf "${tmp_dir}/ocm.tar.gz" -C "$tmp_dir"
   local src_dir="${tmp_dir}/ocm-main"
 
-  # 确定 npm registry（国内显式指定，避免配置丢失）
+  debug "OCM 源码目录: $src_dir"
+  debug "源码内容: $(ls "$src_dir" 2>/dev/null || echo '目录不存在')"
+
+  # npm registry
   local npm_reg_flag=""
   if [ "$IS_CHINA" = true ]; then
     local npm_reg="${OCM_MIRROR:-https://registry.npmmirror.com}"
@@ -461,14 +543,19 @@ install_ocm_from_tarball() {
   # 安装依赖
   info "正在安装依赖..."
   cd "$src_dir"
+  debug "当前目录: $(pwd)"
+  debug "package.json 存在: $([ -f package.json ] && echo '是' || echo '否')"
+
   # shellcheck disable=SC2086
   if ! npm install $npm_reg_flag 2>&1; then
     fail "依赖安装失败（上方有详细错误信息）"
-    info "请检查网络连接后重试"
+    debug "npm 版本: $(npm --version 2>/dev/null || echo '未知')"
+    debug "node 版本: $(node --version 2>/dev/null || echo '未知')"
     rm -rf "$tmp_dir"
     exit 1
   fi
   success "依赖安装完成"
+  debug "node_modules 大小: $(du -sh node_modules 2>/dev/null || echo '未知')"
 
   # 构建
   info "正在构建..."
@@ -478,11 +565,13 @@ install_ocm_from_tarball() {
     exit 1
   fi
   success "构建完成"
+  debug "dist 内容: $(ls -la dist/ 2>/dev/null || echo 'dist 不存在')"
 
   # 全局安装
   info "正在全局安装..."
+  debug "npm prefix -g (安装前): $(npm prefix -g 2>/dev/null || echo '未知')"
+
   if ! npm install -g . 2>&1; then
-    # 无权限时尝试 sudo
     warn "无权限，尝试 sudo..."
     if ! sudo npm install -g . 2>&1; then
       fail "全局安装失败"
@@ -494,10 +583,18 @@ install_ocm_from_tarball() {
   # 确保 npm 全局 bin 在 PATH 中
   local npm_global_bin
   npm_global_bin="$(npm prefix -g 2>/dev/null)/bin"
+  debug "npm 全局 bin 目录: $npm_global_bin"
+  debug "该目录是否存在: $([ -d "$npm_global_bin" ] && echo '是' || echo '否')"
+  debug "该目录内容: $(ls -la "$npm_global_bin/" 2>/dev/null || echo '不存在')"
+
   if [ -d "$npm_global_bin" ]; then
     export PATH="$npm_global_bin:$PATH"
     info "npm 全局目录: ${npm_global_bin}"
   fi
+
+  # 检查 ocm 是否可执行
+  debug "安装后 command -v ocm: $(command -v ocm 2>/dev/null || echo '未找到')"
+  debug "安装后 PATH: $PATH"
 
   rm -rf "$tmp_dir"
   success "OCM 安装完成"
@@ -506,17 +603,22 @@ install_ocm_from_tarball() {
 # ── 6. 启动向导 ──
 
 run_init() {
-  # 确保 npm 全局 bin 目录在 PATH 中
+  debug "=== run_init 开始 ==="
+
+  # 确保各种 bin 目录在 PATH 中
   local npm_global_bin
   npm_global_bin="$(npm prefix -g 2>/dev/null)/bin"
   if [ -d "$npm_global_bin" ]; then
     export PATH="$npm_global_bin:$PATH"
   fi
-
-  # 也确保 node home 在 PATH 中
   if [ -d "$HOME/.local/node/bin" ]; then
     export PATH="$HOME/.local/node/bin:$PATH"
   fi
+
+  debug "最终 PATH: $PATH"
+  debug "command -v node: $(command -v node 2>/dev/null || echo '未找到')"
+  debug "command -v npm: $(command -v npm 2>/dev/null || echo '未找到')"
+  debug "command -v ocm: $(command -v ocm 2>/dev/null || echo '未找到')"
 
   # 查找 ocm 实际路径
   local ocm_bin
@@ -524,17 +626,28 @@ run_init() {
 
   # 常见位置搜索
   if [ -z "$ocm_bin" ]; then
+    debug "PATH 中未找到 ocm，搜索常见位置..."
     for try_path in \
       "$npm_global_bin/ocm" \
       "$HOME/.local/node/bin/ocm" \
-      "$HOME/.local/node/lib/node_modules/.bin/ocm" \
+      "$HOME/.local/node/lib/node_modules/ocm/dist/index.js" \
       "/usr/local/bin/ocm"; do
+      debug "  检查: $try_path -> $([ -e "$try_path" ] && echo '存在' || echo '不存在') $([ -x "$try_path" ] && echo '(可执行)' || echo '')"
       if [ -x "$try_path" ]; then
         ocm_bin="$try_path"
+        debug "  找到 ocm: $try_path"
         break
       fi
     done
   fi
+
+  # 检查 rc 文件状态
+  debug "~/.zshrc 存在: $([ -f "$HOME/.zshrc" ] && echo '是' || echo '否')"
+  if [ -f "$HOME/.zshrc" ]; then
+    debug "~/.zshrc 中的 PATH 配置: $(grep -n 'PATH' "$HOME/.zshrc" 2>/dev/null || echo '无')"
+  fi
+  debug "~/.bashrc 存在: $([ -f "$HOME/.bashrc" ] && echo '是' || echo '否')"
+  debug "~/.bash_profile 存在: $([ -f "$HOME/.bash_profile" ] && echo '是' || echo '否')"
 
   printf "\n"
   printf "  ${GREEN}${BOLD}安装完成！${NC}\n"
@@ -546,14 +659,22 @@ run_init() {
     printf "\n"
     exec "$ocm_bin" init
   else
-    success "OCM 已安装，但需要打开新终端才能使用"
+    success "OCM 已安装，但需要刷新终端环境才能使用"
     printf "\n"
     info "请执行以下操作："
     info "  1. 关闭当前终端"
     info "  2. 打开新终端"
     info "  3. 运行: ocm init"
     printf "\n"
-    info "或者在当前终端运行: source ~/.zshrc && ocm init"
+    info "或者在当前终端运行:"
+    info "  source ~/.zshrc && ocm init"
+    printf "\n"
+
+    debug "=== 诊断信息 ==="
+    debug "npm prefix -g: $(npm prefix -g 2>/dev/null || echo '未知')"
+    debug "ls npm_global_bin: $(ls -la "$npm_global_bin/" 2>/dev/null | grep ocm || echo 'ocm 不在 npm 全局目录')"
+    debug "ls ~/.local/node/bin: $(ls -la "$HOME/.local/node/bin/" 2>/dev/null | grep ocm || echo 'ocm 不在 node bin')"
+    debug "find ocm: $(find "$HOME/.local" -name "ocm" -type f 2>/dev/null | head -5 || echo '未找到')"
   fi
 }
 
@@ -563,6 +684,9 @@ main() {
   printf "\n"
   printf "  ${CYAN}${BOLD}OCM — OpenClaw Manager${NC} v${VERSION}\n"
   printf "  ${DIM}curl 一行装好 OpenClaw，一条命令切模型${NC}\n"
+  if [ "$OCM_DEBUG" = "1" ]; then
+    printf "  ${DIM}[调试模式已开启，设置 OCM_DEBUG=0 关闭]${NC}\n"
+  fi
   printf "\n"
 
   preflight_checks
