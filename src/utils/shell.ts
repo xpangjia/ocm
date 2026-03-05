@@ -37,7 +37,8 @@ export async function run(
 
 export function which(cmd: string): boolean {
   try {
-    execSync(`which ${cmd}`, { stdio: "pipe" });
+    const check = process.platform === "win32" ? `where ${cmd}` : `which ${cmd}`;
+    execSync(check, { stdio: "pipe" });
     return true;
   } catch {
     return false;

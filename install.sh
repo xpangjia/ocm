@@ -74,9 +74,16 @@ preflight_checks() {
   case "$os" in
     Darwin) info "系统: macOS ($arch)" ;;
     Linux)  info "系统: Linux ($arch)" ;;
+    MINGW*|MSYS*|CYGWIN*)
+      fail "检测到 Windows 环境（Git Bash / MSYS）"
+      fail "请使用 PowerShell 安装脚本："
+      info "  irm https://raw.githubusercontent.com/xpangjia/ocm/main/install.ps1 | iex"
+      exit 1
+      ;;
     *)
       fail "不支持的操作系统: $os"
-      fail "OCM 目前只支持 macOS 和 Linux"
+      fail "macOS/Linux 用此脚本，Windows 请用 PowerShell 脚本："
+      info "  irm https://raw.githubusercontent.com/xpangjia/ocm/main/install.ps1 | iex"
       exit 1
       ;;
   esac
