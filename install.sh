@@ -434,28 +434,45 @@ install_ocm_from_tarball() {
   tar -xzf "${tmp_dir}/ocm.tar.gz" -C "$tmp_dir"
   local src_dir="${tmp_dir}/ocm-main"
 
-  # 安装依赖 + 构建
-  info "正在安装依赖..."
-  cd "$src_dir"
-  if ! npm install 2>&1 | tail -1; then
-    rm -rf "$tmp_dir"
-    fail "依赖安装失败"
-    exit 1
+  # 确定 npm registry（国内显式指定，避免配置丢失）
+  local npm_reg_flag=""
+  if [ "$IS_CHINA" = true ]; then
+    local npm_reg="${OCM_MIRROR:-https://registry.npmmirror.com}"
+    npm_reg_flag="--registry=${npm_reg}"
+    info "使用 npm 镜像: ${npm_reg}"
   fi
 
-  info "正在构建..."
-  if ! npm run build 2>&1 | tail -1; then
+  # 安装依赖
+  info "正在安装依赖..."
+  cd "$src_dir"
+  # shellcheck disable=SC2086
+  if ! npm install $npm_reg_flag 2>&1; then
+    fail "依赖安装失败（上方有详细错误信息）"
+    info "请检查网络连接后重试"
     rm -rf "$tmp_dir"
-    fail "构建失败"
     exit 1
   fi
+  success "依赖安装完成"
+
+  # 构建
+  info "正在构建..."
+  if ! npm run build 2>&1; then
+    fail "构建失败（上方有详细错误信息）"
+    rm -rf "$tmp_dir"
+    exit 1
+  fi
+  success "构建完成"
 
   # 全局安装
   info "正在全局安装..."
-  if ! npm install -g . 2>&1 | tail -1; then
-    rm -rf "$tmp_dir"
-    fail "全局安装失败"
-    exit 1
+  if ! npm install -g . 2>&1; then
+    # 无权限时尝试 sudo
+    warn "无权限，尝试 sudo..."
+    if ! sudo npm install -g . 2>&1; then
+      fail "全局安装失败"
+      info "请手动运行: cd ${src_dir} && npm install -g ."
+      exit 1
+    fi
   fi
 
   rm -rf "$tmp_dir"
