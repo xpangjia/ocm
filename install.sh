@@ -29,13 +29,13 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
-# ── 输出函数 ──
+# ── 输出函数（用 printf 替代 echo -e，兼容 sh）──
 
-info()    { echo -e "  ${CYAN}ℹ${NC} $1"; }
-success() { echo -e "  ${GREEN}✔${NC} $1"; }
-warn()    { echo -e "  ${YELLOW}⚠${NC} $1"; }
-fail()    { echo -e "  ${RED}✘${NC} $1"; }
-step()    { echo -e "\n  ${BOLD}$1${NC}"; }
+info()    { printf "  ${CYAN}ℹ${NC} %s\n" "$1"; }
+success() { printf "  ${GREEN}✔${NC} %s\n" "$1"; }
+warn()    { printf "  ${YELLOW}⚠${NC} %s\n" "$1"; }
+fail()    { printf "  ${RED}✘${NC} %s\n" "$1"; }
+step()    { printf "\n  ${BOLD}%s${NC}\n" "$1"; }
 
 # ── 工具函数 ──
 
@@ -131,6 +131,92 @@ setup_mirrors() {
 
 # ── 4. Node.js ──
 
+# 直接从镜像下载 Node.js 二进制（国内网络降级方案）
+install_node_binary() {
+  local node_mirror="${OCM_NODE_MIRROR:-https://npmmirror.com/mirrors/node/}"
+  local os arch_name
+
+  os="$(uname -s)"
+  local machine
+  machine="$(uname -m)"
+
+  # 确定平台名
+  case "$os" in
+    Darwin) os="darwin" ;;
+    Linux)  os="linux" ;;
+  esac
+
+  # 确定架构名
+  case "$machine" in
+    x86_64)  arch_name="x64" ;;
+    aarch64|arm64) arch_name="arm64" ;;
+    *)
+      fail "不支持的架构: $machine"
+      return 1
+      ;;
+  esac
+
+  local node_ver="v${REQUIRED_NODE_MAJOR}.0.0"
+
+  # 先获取实际最新 LTS 版本号
+  info "查询 Node.js ${REQUIRED_NODE_MAJOR}.x 最新版本..."
+  local latest_ver
+  latest_ver=$(curl -fsSL "${node_mirror}index.json" 2>/dev/null \
+    | grep -o "\"v${REQUIRED_NODE_MAJOR}\.[0-9]*\.[0-9]*\"" \
+    | head -1 \
+    | tr -d '"') || true
+
+  if [ -n "$latest_ver" ]; then
+    node_ver="$latest_ver"
+  fi
+
+  local tarball="node-${node_ver}-${os}-${arch_name}.tar.gz"
+  local url="${node_mirror}${node_ver}/${tarball}"
+  local install_dir="/usr/local"
+
+  info "下载 Node.js ${node_ver} (${os}-${arch_name})..."
+  info "来源: ${url}"
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+
+  if ! curl -fsSL --max-time 120 -o "${tmp_dir}/${tarball}" "$url"; then
+    rm -rf "$tmp_dir"
+    fail "Node.js 下载失败"
+    return 1
+  fi
+
+  info "正在安装到 ${install_dir}..."
+
+  # 解压到临时目录再复制（兼容无 sudo 场景）
+  tar -xzf "${tmp_dir}/${tarball}" -C "$tmp_dir"
+
+  local extracted_dir="${tmp_dir}/node-${node_ver}-${os}-${arch_name}"
+
+  if [ -w "$install_dir" ]; then
+    cp -r "${extracted_dir}/bin/"* "${install_dir}/bin/" 2>/dev/null || true
+    cp -r "${extracted_dir}/lib/"* "${install_dir}/lib/" 2>/dev/null || true
+    cp -r "${extracted_dir}/include/"* "${install_dir}/include/" 2>/dev/null || true
+    cp -r "${extracted_dir}/share/"* "${install_dir}/share/" 2>/dev/null || true
+  else
+    sudo cp -r "${extracted_dir}/bin/"* "${install_dir}/bin/" 2>/dev/null || true
+    sudo cp -r "${extracted_dir}/lib/"* "${install_dir}/lib/" 2>/dev/null || true
+    sudo cp -r "${extracted_dir}/include/"* "${install_dir}/include/" 2>/dev/null || true
+    sudo cp -r "${extracted_dir}/share/"* "${install_dir}/share/" 2>/dev/null || true
+  fi
+
+  rm -rf "$tmp_dir"
+
+  # 验证
+  if command_exists node; then
+    success "Node.js $(node --version) 安装完成 (直接二进制)"
+    return 0
+  else
+    fail "Node.js 安装后未找到，请检查 PATH"
+    return 1
+  fi
+}
+
 ensure_nodejs() {
   step "[4/5] 检测 Node.js"
 
@@ -152,7 +238,7 @@ ensure_nodejs() {
 
   info "正在安装 Node.js $REQUIRED_NODE_MAJOR..."
 
-  # 优先用 fnm
+  # 优先用已有的 fnm
   if command_exists fnm; then
     info "使用 fnm 安装..."
     fnm install "$REQUIRED_NODE_MAJOR"
@@ -162,7 +248,7 @@ ensure_nodejs() {
     return
   fi
 
-  # 其次用 nvm
+  # 其次用已有的 nvm
   if command_exists nvm || [ -s "$HOME/.nvm/nvm.sh" ]; then
     [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"
     info "使用 nvm 安装..."
@@ -172,36 +258,60 @@ ensure_nodejs() {
     return
   fi
 
-  # 都没有，安装 fnm
+  # macOS 有 brew → 用 brew 装 fnm 然后装 Node
+  if [ "$(uname -s)" = "Darwin" ] && command_exists brew; then
+    info "使用 Homebrew 安装 fnm..."
+    brew install fnm
+    eval "$(fnm env)"
+    fnm install "$REQUIRED_NODE_MAJOR"
+    fnm use "$REQUIRED_NODE_MAJOR"
+    eval "$(fnm env)"
+    success "Node.js $(node --version) 安装完成 (via brew + fnm)"
+    return
+  fi
+
+  # 国内网络：直接从 npmmirror 下载 Node.js 二进制（不依赖 fnm.vercel.app）
+  if [ "$IS_CHINA" = true ]; then
+    info "国内网络，直接下载 Node.js 二进制..."
+    if install_node_binary; then
+      return
+    fi
+    # 降级：尝试 fnm
+    warn "二进制安装失败，尝试 fnm..."
+  fi
+
+  # 海外网络（或国内降级）：安装 fnm
   info "正在安装 fnm (Fast Node Manager)..."
 
-  if [ "$(uname -s)" = "Darwin" ] && command_exists brew; then
-    brew install fnm
-  else
-    local fnm_url="https://fnm.vercel.app/install"
-    if [ "$IS_CHINA" = true ]; then
-      local proxy="${OCM_GITHUB_PROXY:-https://ghfast.top/}"
-      # fnm 安装脚本从 GitHub 下载，走代理
-      curl -fsSL "$fnm_url" | bash -s -- --skip-shell
-    else
-      curl -fsSL "$fnm_url" | bash -s -- --skip-shell
+  local fnm_url="https://fnm.vercel.app/install"
+  if curl -fsSL --max-time 15 "$fnm_url" 2>/dev/null | bash -s -- --skip-shell; then
+    # 加载 fnm
+    export PATH="$HOME/.local/share/fnm:$PATH"
+    eval "$(fnm env)" 2>/dev/null || true
+
+    if command_exists fnm; then
+      fnm install "$REQUIRED_NODE_MAJOR"
+      fnm use "$REQUIRED_NODE_MAJOR"
+      eval "$(fnm env)"
+      success "Node.js $(node --version) 安装完成 (via fnm)"
+      return
     fi
   fi
 
-  # 加载 fnm
-  export PATH="$HOME/.local/share/fnm:$PATH"
-  eval "$(fnm env)" 2>/dev/null || true
-
-  if ! command_exists fnm; then
-    fail "fnm 安装失败"
-    fail "请手动安装 Node.js ≥ $REQUIRED_NODE_MAJOR: https://nodejs.org/"
-    exit 1
+  # 最后降级：海外也尝试直接下载二进制
+  if [ "$IS_CHINA" = false ]; then
+    warn "fnm 安装失败，尝试直接下载 Node.js..."
+    export OCM_NODE_MIRROR="https://nodejs.org/dist/"
+    if install_node_binary; then
+      return
+    fi
   fi
 
-  fnm install "$REQUIRED_NODE_MAJOR"
-  fnm use "$REQUIRED_NODE_MAJOR"
-  eval "$(fnm env)"
-  success "Node.js $(node --version) 安装完成"
+  fail "Node.js 安装失败"
+  fail "请手动安装 Node.js ≥ $REQUIRED_NODE_MAJOR: https://nodejs.org/"
+  info "macOS: brew install node@$REQUIRED_NODE_MAJOR"
+  info "Ubuntu/Debian: curl -fsSL https://deb.nodesource.com/setup_${REQUIRED_NODE_MAJOR}.x | sudo -E bash - && sudo apt-get install -y nodejs"
+  exit 1
 }
 
 # ── 5. 安装 OCM ──
@@ -231,19 +341,19 @@ install_ocm() {
 # ── 6. 启动向导 ──
 
 run_init() {
-  echo ""
-  echo -e "  ${GREEN}${BOLD}安装完成！${NC}正在启动配置向导..."
-  echo ""
+  printf "\n"
+  printf "  ${GREEN}${BOLD}安装完成！${NC}正在启动配置向导...\n"
+  printf "\n"
   exec ocm init
 }
 
 # ── 主函数 ──
 
 main() {
-  echo ""
-  echo -e "  ${CYAN}${BOLD}OCM — OpenClaw Manager${NC} v${VERSION}"
-  echo -e "  ${DIM}curl 一行装好 OpenClaw，一条命令切模型${NC}"
-  echo ""
+  printf "\n"
+  printf "  ${CYAN}${BOLD}OCM — OpenClaw Manager${NC} v${VERSION}\n"
+  printf "  ${DIM}curl 一行装好 OpenClaw，一条命令切模型${NC}\n"
+  printf "\n"
 
   preflight_checks
   detect_network
