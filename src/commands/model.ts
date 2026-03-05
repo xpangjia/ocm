@@ -3,9 +3,9 @@ import { header, success, error, info, cancelled, isCancel, pc } from "../utils/
 import { readProviders, setCurrentModel, getCurrentModel, removeProvider as removeProviderConfig } from "../core/ocm-config.js";
 import { setActiveModel, setEnvVar, addCustomProvider } from "../core/openclaw-config.js";
 import { restartGateway } from "../core/process.js";
-import { getProvider, CN_PROVIDERS, GLOBAL_PROVIDERS, LOCAL_PROVIDERS, CUSTOM_PROVIDERS, ALL_PROVIDERS } from "../registry/index.js";
+import { getProvider, CN_PROVIDERS, GLOBAL_PROVIDERS, LOCAL_PROVIDERS } from "../registry/index.js";
 import { validateApiKey } from "../core/validator.js";
-import { configureProvider } from "./init.js";
+import { configureProvider, selectProvider } from "./init.js";
 import type { ProviderTemplate } from "../registry/types.js";
 
 export async function modelSwitch(targetProvider?: string): Promise<void> {
@@ -148,55 +148,7 @@ async function doSwitch(
 export async function modelAdd(): Promise<void> {
   header();
 
-  const cnOptions = CN_PROVIDERS.filter((p) => p.authType !== "oauth" || p.models.length > 0).map((p) => ({
-    value: p.id,
-    label: `${p.nameZh} (${p.name})`,
-    hint: p.models.map((m) => m.id).join(", ") || undefined,
-  }));
-
-  const globalOptions = GLOBAL_PROVIDERS.map((p) => ({
-    value: p.id,
-    label: `${p.nameZh} (${p.name})`,
-    hint: p.models.map((m) => m.id).join(", ") || undefined,
-  }));
-
-  const localOptions = LOCAL_PROVIDERS.map((p) => ({
-    value: p.id,
-    label: p.nameZh,
-  }));
-
-  const customOptions = CUSTOM_PROVIDERS.map((p) => ({
-    value: p.id,
-    label: `${p.nameZh} (${p.name})`,
-    hint: "自定义 Base URL + API Key",
-  }));
-
-  const providerId = await p.select({
-    message: "选择要添加的模型提供商",
-    options: [
-      { value: "_cn", label: pc.bold("── 国内直连 ──") },
-      ...cnOptions,
-      { value: "_global", label: pc.bold("── 海外 ──") },
-      ...globalOptions,
-      { value: "_local", label: pc.bold("── 本地 ──") },
-      ...localOptions,
-      { value: "_custom", label: pc.bold("── 自定义/中转站 ──") },
-      ...customOptions,
-    ],
-  });
-
-  if (isCancel(providerId)) return cancelled();
-  if (typeof providerId === "string" && providerId.startsWith("_")) {
-    error("请选择一个具体的提供商");
-    process.exit(1);
-  }
-
-  const provider = getProvider(providerId as string);
-  if (!provider) {
-    error("未知的提供商");
-    process.exit(1);
-  }
-
+  const provider = await selectProvider("选择要添加的模型提供商");
   await configureProvider(provider);
 }
 

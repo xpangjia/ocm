@@ -48,56 +48,8 @@ export async function initCommand(): Promise<void> {
     s.stop(`OpenClaw ${ver ?? ""} 安装完成`);
   }
 
-  // 3. 选择模型提供商
-  const cnOptions = CN_PROVIDERS.filter((p) => p.models.length > 0 || p.authType === "api-key").map((p) => ({
-    value: p.id,
-    label: `${p.nameZh} (${p.name})`,
-    hint: p.models.map((m) => m.id).join(", ") || undefined,
-  }));
-
-  const globalOptions = GLOBAL_PROVIDERS.map((p) => ({
-    value: p.id,
-    label: `${p.nameZh} (${p.name})`,
-    hint: p.models.map((m) => m.id).join(", ") || undefined,
-  }));
-
-  const localOptions = LOCAL_PROVIDERS.filter((p) => p.models.length > 0).map((p) => ({
-    value: p.id,
-    label: p.nameZh,
-    hint: p.models.map((m) => m.id).join(", ") || undefined,
-  }));
-
-  const customOptions = CUSTOM_PROVIDERS.map((p) => ({
-    value: p.id,
-    label: `${p.nameZh} (${p.name})`,
-    hint: "自定义 Base URL + API Key",
-  }));
-
-  const providerId = await p.select({
-    message: "选择 AI 模型提供商",
-    options: [
-      { value: "_cn_header", label: pc.bold("── 国内直连（推荐）──") },
-      ...cnOptions,
-      { value: "_global_header", label: pc.bold("── 海外 ──") },
-      ...globalOptions,
-      { value: "_local_header", label: pc.bold("── 本地 ──") },
-      ...localOptions,
-      { value: "_custom_header", label: pc.bold("── 自定义/中转站 ──") },
-      ...customOptions,
-    ],
-  });
-
-  if (isCancel(providerId)) return cancelled();
-  if (typeof providerId === "string" && providerId.startsWith("_")) {
-    error("请选择一个具体的提供商，而不是分类标题");
-    process.exit(1);
-  }
-
-  const provider = getProvider(providerId as string);
-  if (!provider) {
-    error("未知的提供商");
-    process.exit(1);
-  }
+  // 3. 选择模型提供商（两步：先选分类，再选具体提供商）
+  const provider = await selectProvider("选择 AI 模型提供商");
 
   await configureProvider(provider);
 
@@ -252,4 +204,68 @@ export async function configureProvider(provider: ProviderTemplate): Promise<voi
   }
 
   success(`${provider.nameZh} 已配置！当前模型: ${provider.id}/${defaultModel}`);
+}
+
+/**
+ * 两步选择提供商：先选分类 → 再选具体提供商
+ * 避免 @clack/prompts select 在超长列表下的渲染 bug
+ */
+export async function selectProvider(message: string): Promise<ProviderTemplate> {
+  // 第一步：选分类
+  const category = await p.select({
+    message,
+    options: [
+      { value: "cn", label: "国内直连（推荐）", hint: "DeepSeek、智谱、Kimi、通义、百炼 等" },
+      { value: "global", label: "海外", hint: "Anthropic、OpenAI、Google、OpenRouter 等" },
+      { value: "local", label: "本地部署", hint: "Ollama、vLLM、LM Studio" },
+      { value: "custom", label: "自定义/中转站", hint: "第三方 API 代理、中转站" },
+    ],
+  });
+
+  if (isCancel(category)) return cancelled() as never;
+
+  // 第二步：选具体提供商
+  let providerList: ProviderTemplate[];
+  switch (category) {
+    case "cn":
+      providerList = CN_PROVIDERS.filter((p) => p.models.length > 0 || p.authType === "api-key");
+      break;
+    case "global":
+      providerList = GLOBAL_PROVIDERS;
+      break;
+    case "local":
+      providerList = LOCAL_PROVIDERS.filter((p) => p.models.length > 0);
+      break;
+    case "custom":
+      providerList = CUSTOM_PROVIDERS;
+      break;
+    default:
+      providerList = [];
+  }
+
+  if (providerList.length === 0) {
+    error("该分类暂无可用提供商");
+    process.exit(1);
+  }
+
+  const providerId = await p.select({
+    message: "选择提供商",
+    options: providerList.map((p) => ({
+      value: p.id,
+      label: `${p.nameZh} (${p.name})`,
+      hint: p.id.startsWith("custom-")
+        ? "自定义 Base URL + API Key"
+        : p.models.map((m) => m.id).join(", ") || undefined,
+    })),
+  });
+
+  if (isCancel(providerId)) return cancelled() as never;
+
+  const provider = getProvider(providerId as string);
+  if (!provider) {
+    error("未知的提供商");
+    process.exit(1);
+  }
+
+  return provider;
 }
