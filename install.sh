@@ -464,6 +464,14 @@ install_ocm_from_tarball() {
     fi
   fi
 
+  # 确保 npm 全局 bin 在 PATH 中
+  local npm_global_bin
+  npm_global_bin="$(npm prefix -g 2>/dev/null)/bin"
+  if [ -d "$npm_global_bin" ]; then
+    export PATH="$npm_global_bin:$PATH"
+    info "npm 全局目录: ${npm_global_bin}"
+  fi
+
   rm -rf "$tmp_dir"
   success "OCM 安装完成"
 }
@@ -471,10 +479,33 @@ install_ocm_from_tarball() {
 # ── 6. 启动向导 ──
 
 run_init() {
+  # 确保 npm 全局 bin 目录在 PATH 中
+  local npm_global_bin
+  npm_global_bin="$(npm prefix -g 2>/dev/null)/bin"
+  if [ -d "$npm_global_bin" ]; then
+    export PATH="$npm_global_bin:$PATH"
+  fi
+
+  # 查找 ocm 实际路径
+  local ocm_bin
+  ocm_bin="$(command -v ocm 2>/dev/null || echo "")"
+
+  if [ -z "$ocm_bin" ] && [ -x "$npm_global_bin/ocm" ]; then
+    ocm_bin="$npm_global_bin/ocm"
+  fi
+
   printf "\n"
-  printf "  ${GREEN}${BOLD}安装完成！${NC}正在启动配置向导...\n"
-  printf "\n"
-  exec ocm init
+  printf "  ${GREEN}${BOLD}安装完成！${NC}\n"
+
+  if [ -n "$ocm_bin" ]; then
+    printf "  正在启动配置向导...\n"
+    printf "\n"
+    exec "$ocm_bin" init
+  else
+    printf "\n"
+    warn "ocm 命令未在 PATH 中找到"
+    info "请打开新终端窗口，然后运行: ocm init"
+  fi
 }
 
 # ── 主函数 ──
