@@ -91,7 +91,7 @@ debug "command -v ocm: $(command -v ocm 2>/dev/null || echo '未找到')"
 # ── 1. 前置检查 ──
 
 preflight_checks() {
-  step "[1/5] 环境检测"
+  step "[1/7] 环境检测"
 
   local os
   os="$(uname -s)"
@@ -127,7 +127,7 @@ preflight_checks() {
 # ── 2. 网络检测 ──
 
 detect_network() {
-  step "[2/5] 网络检测"
+  step "[2/7] 网络检测"
 
   if curl -sI https://registry.npmjs.org --max-time 3 > /dev/null 2>&1; then
     IS_CHINA=false
@@ -142,7 +142,7 @@ detect_network() {
 # ── 3. 配置镜像 ──
 
 setup_mirrors() {
-  step "[3/5] 配置镜像源"
+  step "[3/7] 配置镜像源"
 
   if [ "$IS_CHINA" = true ]; then
     local npm_mirror="${OCM_MIRROR:-https://registry.npmmirror.com}"
@@ -161,7 +161,94 @@ setup_mirrors() {
   fi
 }
 
-# ── 4. Node.js ──
+# ── 4. Git ──
+
+ensure_git() {
+  step "[4/7] 检测 Git"
+
+  if command_exists git; then
+    success "git $(git --version 2>/dev/null | sed 's/git version //') 已安装"
+    debug "git 路径: $(command -v git)"
+    return
+  fi
+
+  warn "未找到 git（OpenClaw 安装需要 git）"
+
+  # macOS: 避免触发 Xcode CLT 弹窗（巨慢），优先用其他方式装 git
+  if [ "$(uname -s)" = "Darwin" ]; then
+    # 方式 1: brew
+    if command_exists brew; then
+      info "使用 Homebrew 安装 git..."
+      if brew install git 2>&1; then
+        success "git 安装完成 (via brew)"
+        return
+      fi
+      warn "brew install git 失败"
+    fi
+
+    # 方式 2: 从国内镜像下载 git 安装包
+    info "正在下载 git 安装包..."
+    local git_pkg_url="https://sourceforge.net/projects/git-osx-installer/files/latest/download"
+    local tmp_git
+    tmp_git="$(mktemp -d)"
+
+    # sourceforge 国内基本能访问
+    if curl -fsSL --max-time 60 -o "${tmp_git}/git-installer.dmg" "$git_pkg_url" 2>/dev/null; then
+      info "正在安装 git（可能需要输入密码）..."
+      hdiutil attach "${tmp_git}/git-installer.dmg" -quiet -mountpoint "${tmp_git}/git-mount" 2>/dev/null || true
+      local pkg_file
+      pkg_file="$(find "${tmp_git}/git-mount" -name "*.pkg" 2>/dev/null | head -1)"
+      if [ -n "$pkg_file" ]; then
+        sudo installer -pkg "$pkg_file" -target / 2>&1 || true
+        hdiutil detach "${tmp_git}/git-mount" -quiet 2>/dev/null || true
+      fi
+      rm -rf "$tmp_git"
+
+      if command_exists git; then
+        success "git $(git --version 2>/dev/null | sed 's/git version //') 安装完成"
+        return
+      fi
+    fi
+    rm -rf "$tmp_git" 2>/dev/null || true
+
+    # 方式 3: 提示用户手动触发 CLT（作为最后手段）
+    warn "自动安装 git 失败"
+    info "请在弹出的对话框中点击「安装」安装 Command Line Tools"
+    info "（这会安装 git，安装完成后重新运行此脚本）"
+    xcode-select --install 2>/dev/null || true
+    fail "请等待 Command Line Tools 安装完成后，重新运行安装脚本"
+    exit 1
+  fi
+
+  # Linux
+  if [ "$(uname -s)" = "Linux" ]; then
+    if command_exists apt-get; then
+      info "使用 apt 安装 git..."
+      sudo apt-get update -qq && sudo apt-get install -y -qq git
+    elif command_exists yum; then
+      info "使用 yum 安装 git..."
+      sudo yum install -y git
+    elif command_exists dnf; then
+      info "使用 dnf 安装 git..."
+      sudo dnf install -y git
+    elif command_exists pacman; then
+      info "使用 pacman 安装 git..."
+      sudo pacman -S --noconfirm git
+    fi
+
+    if command_exists git; then
+      success "git 安装完成"
+      return
+    fi
+  fi
+
+  fail "git 安装失败，请手动安装后重试"
+  info "macOS: brew install git"
+  info "Ubuntu: sudo apt install git"
+  exit 1
+}
+
+# ── 5. Node.js ──
 
 install_node_binary() {
   local node_mirror="${OCM_NODE_MIRROR:-https://npmmirror.com/mirrors/node/}"
@@ -335,7 +422,7 @@ persist_path_to_shell_rc() {
 }
 
 ensure_nodejs() {
-  step "[4/5] 检测 Node.js"
+  step "[5/7] 检测 Node.js"
 
   debug "检查 node 命令..."
   if command_exists node; then
@@ -440,7 +527,7 @@ ensure_nodejs() {
 # ── 5. 安装 OCM ──
 
 install_ocm() {
-  step "[5/5] 安装 OCM"
+  step "[6/7] 安装 OCM"
 
   debug "检查 ocm 命令: $(command -v ocm 2>/dev/null || echo '未找到')"
 
@@ -637,9 +724,10 @@ install_ocm_from_tarball() {
   fi
 }
 
-# ── 6. 启动向导 ──
+# ── 7. 启动向导 ──
 
 run_init() {
+  step "[7/7] 启动向导"
   debug "=== run_init 开始 ==="
 
   # 确保各种 bin 目录在 PATH 中
@@ -729,6 +817,7 @@ main() {
   preflight_checks
   detect_network
   setup_mirrors
+  ensure_git
   ensure_nodejs
   install_ocm
   run_init
