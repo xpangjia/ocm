@@ -172,55 +172,71 @@ ensure_brew() {
 
   step "[4/8] 检测 Homebrew"
 
-  if command_exists brew; then
-    success "Homebrew $(brew --version 2>/dev/null | head -1 | sed 's/Homebrew //' ) 已安装"
-    debug "brew 路径: $(command -v brew)"
+  # 检查已有的 brew（包括不在 PATH 中的情况）
+  if ! command_exists brew; then
+    for try_brew in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+      if [ -x "$try_brew" ]; then
+        eval "$($try_brew shellenv)"
+        debug "找到 brew: $try_brew，已加入 PATH"
+        break
+      fi
+    done
+  fi
 
-    # 国内镜像：设置 brew 源加速
-    if [ "$IS_CHINA" = true ]; then
-      export HOMEBREW_API_DOMAIN="https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/api"
-      export HOMEBREW_BREW_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/brew.git"
-      export HOMEBREW_CORE_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/homebrew-core.git"
-      export HOMEBREW_BOTTLE_DOMAIN="https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles"
-      debug "已设置 Homebrew 清华镜像"
-    fi
+  if command_exists brew; then
+    success "Homebrew $(brew --version 2>/dev/null | head -1 | sed 's/Homebrew //') 已安装"
+    debug "brew 路径: $(command -v brew)"
     return
   fi
 
   info "正在安装 Homebrew..."
+  info "安装过程中可能需要输入开机密码（sudo）"
 
   if [ "$IS_CHINA" = true ]; then
-    # 国内：使用 ineo6 维护的国内镜像安装脚本
-    info "使用国内镜像安装 Homebrew..."
-    export HOMEBREW_API_DOMAIN="https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/api"
-    export HOMEBREW_BREW_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/brew.git"
-    export HOMEBREW_CORE_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/homebrew-core.git"
-    export HOMEBREW_BOTTLE_DOMAIN="https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles"
+    # ── 国内：使用 cunkai 镜像（胖佳推荐） ──
+    local brew_url="https://gitee.com/cunkai/HomebrewCN/raw/master/Homebrew.sh"
+    local tmp_brew
+    tmp_brew="$(mktemp)"
 
-    local brew_install_url="https://gitee.com/ineo6/homebrew-install/raw/master/install.sh"
-    debug "brew 安装脚本: $brew_install_url"
+    info "下载国内镜像安装脚本..."
+    debug "brew 安装脚本: $brew_url"
 
-    if NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL --max-time 30 "$brew_install_url")" 2>&1; then
-      debug "brew 安装脚本执行完成"
-    else
-      warn "国内镜像安装失败，尝试官方脚本..."
-      # 降级到官方脚本
-      if NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL --max-time 60 https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" 2>&1; then
-        debug "官方脚本安装完成"
-      else
-        warn "Homebrew 安装失败，后续步骤将使用其他方式"
-        return
-      fi
-    fi
-  else
-    # 海外：官方安装脚本
-    debug "使用官方脚本安装 Homebrew"
-    if NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL --max-time 60 https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" 2>&1; then
-      debug "官方脚本安装完成"
-    else
+    if ! curl -fsSL --max-time 30 -o "$tmp_brew" "$brew_url"; then
+      warn "cunkai 安装脚本下载失败"
+      rm -f "$tmp_brew"
       warn "Homebrew 安装失败，后续步骤将使用其他方式"
       return
     fi
+
+    debug "脚本大小: $(wc -c < "$tmp_brew") bytes"
+
+    # 用 sed 替换所有 read 为硬编码值，实现全自动安装
+    # MY_Del_Old: 是否删除旧 brew → Y
+    # MY_DOWN_NUM 第一次: brew 下载源 → 1（清华大学）
+    # MY_DOWN_NUM 第二次: bottles 镜像 → 1（中科大）
+    sed -i '' '/read.*MY_Del_Old/s/.*/MY_Del_Old="Y"/' "$tmp_brew"
+    sed -i '' '/read.*MY_DOWN_NUM/s/.*/MY_DOWN_NUM="1"/' "$tmp_brew"
+    debug "已用 sed 替换交互式 read 为自动值"
+    debug "  删除旧 brew: Y"
+    debug "  brew 下载源: 1（清华大学）"
+    debug "  bottles 镜像: 1（中科大）"
+
+    # 运行安装脚本（sudo 密码从 /dev/tty 读取，用户需要手动输入）
+    info "运行 Homebrew 安装（清华大学镜像 + 中科大 bottles）..."
+    /bin/zsh "$tmp_brew" < /dev/tty 2>&1 || true
+    rm -f "$tmp_brew"
+  else
+    # ── 海外：官方安装脚本 ──
+    local tmp_brew
+    tmp_brew="$(mktemp)"
+    debug "使用官方脚本安装 Homebrew"
+
+    if curl -fsSL --max-time 60 -o "$tmp_brew" "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"; then
+      /bin/bash "$tmp_brew" < /dev/tty 2>&1 || true
+    else
+      warn "官方安装脚本下载失败"
+    fi
+    rm -f "$tmp_brew"
   fi
 
   # brew 安装后需要配置 PATH（Apple Silicon 装在 /opt/homebrew，Intel 在 /usr/local）
@@ -236,7 +252,7 @@ ensure_brew() {
     success "Homebrew 安装完成"
     debug "brew 路径: $(command -v brew)"
 
-    # 将 brew shellenv 写入 shell 配置
+    # 将 brew shellenv 写入 shell 配置（新终端也能用）
     local shell_rc=""
     local user_shell="${SHELL:-/bin/zsh}"
     case "$user_shell" in
@@ -244,8 +260,6 @@ ensure_brew() {
       */bash) shell_rc="$HOME/.bash_profile" ;;
     esac
     [ -z "$shell_rc" ] && shell_rc="$HOME/.zshrc"
-
-    # 文件不存在则创建
     [ ! -f "$shell_rc" ] && touch "$shell_rc"
 
     if ! grep -q 'brew shellenv' "$shell_rc" 2>/dev/null; then
@@ -257,9 +271,9 @@ ensure_brew() {
       info "已将 Homebrew 添加到 ${shell_rc}"
     fi
   else
-    warn "Homebrew 安装可能未完成，后续步骤将使用其他方式"
-    debug "检查 /opt/homebrew/bin/brew: $([ -x "/opt/homebrew/bin/brew" ] && echo '存在' || echo '不存在')"
-    debug "检查 /usr/local/bin/brew: $([ -x "/usr/local/bin/brew" ] && echo '存在' || echo '不存在')"
+    warn "Homebrew 安装未完成，后续步骤将使用其他方式"
+    debug "检查 /opt/homebrew/bin/brew: $([ -x '/opt/homebrew/bin/brew' ] && echo '存在' || echo '不存在')"
+    debug "检查 /usr/local/bin/brew: $([ -x '/usr/local/bin/brew' ] && echo '存在' || echo '不存在')"
   fi
 }
 
