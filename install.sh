@@ -364,13 +364,101 @@ install_ocm() {
 
   info "正在安装 OCM..."
 
-  # 优先从 GitHub 安装（无需 npm publish）
-  if ! retry 3 npm install -g github:xpangjia/ocm; then
-    fail "OCM 安装失败"
-    fail "请检查网络连接，或手动运行: npm install -g github:xpangjia/ocm"
+  # 海外网络：直接从 GitHub 安装
+  if [ "$IS_CHINA" = false ]; then
+    if retry 3 npm install -g github:xpangjia/ocm; then
+      success "OCM 安装完成"
+      return
+    fi
+    warn "GitHub 安装失败，尝试 tarball 方式..."
+  fi
+
+  # 国内网络（或海外降级）：下载 tarball → 本地构建 → 全局安装
+  install_ocm_from_tarball
+}
+
+# 通过 tarball 下载安装 OCM（不直接依赖 git clone GitHub）
+install_ocm_from_tarball() {
+  local repo_url="https://github.com/xpangjia/ocm/archive/refs/heads/main.tar.gz"
+
+  # GitHub 代理列表（国内可用的镜像）
+  local proxies=(
+    "https://ghfast.top/"
+    "https://gh-proxy.com/"
+    "https://github.moeyy.xyz/"
+  )
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  local downloaded=false
+
+  # 国内：依次尝试多个代理
+  if [ "$IS_CHINA" = true ]; then
+    # 允许用户自定义代理
+    if [ -n "${OCM_GITHUB_PROXY:-}" ]; then
+      proxies=("$OCM_GITHUB_PROXY" "${proxies[@]}")
+    fi
+
+    for proxy in "${proxies[@]}"; do
+      local proxy_url="${proxy}${repo_url}"
+      info "尝试下载: ${proxy_url}"
+      if curl -fsSL --max-time 30 -o "${tmp_dir}/ocm.tar.gz" "$proxy_url" 2>/dev/null; then
+        downloaded=true
+        success "下载成功 (via ${proxy})"
+        break
+      fi
+      warn "代理 ${proxy} 失败，尝试下一个..."
+    done
+  fi
+
+  # 海外（或代理全部失败）：直接访问 GitHub
+  if [ "$downloaded" = false ]; then
+    info "尝试直接下载: ${repo_url}"
+    if curl -fsSL --max-time 60 -o "${tmp_dir}/ocm.tar.gz" "$repo_url" 2>/dev/null; then
+      downloaded=true
+      success "下载成功"
+    fi
+  fi
+
+  if [ "$downloaded" = false ]; then
+    rm -rf "$tmp_dir"
+    fail "OCM 源码下载失败（所有源均不可达）"
+    fail "请手动下载并安装："
+    info "  1. 浏览器打开 https://github.com/xpangjia/ocm"
+    info "  2. 点击 Code → Download ZIP"
+    info "  3. 解压后进入目录，运行: npm install && npm run build && npm install -g ."
     exit 1
   fi
 
+  # 解压
+  tar -xzf "${tmp_dir}/ocm.tar.gz" -C "$tmp_dir"
+  local src_dir="${tmp_dir}/ocm-main"
+
+  # 安装依赖 + 构建
+  info "正在安装依赖..."
+  cd "$src_dir"
+  if ! npm install 2>&1 | tail -1; then
+    rm -rf "$tmp_dir"
+    fail "依赖安装失败"
+    exit 1
+  fi
+
+  info "正在构建..."
+  if ! npm run build 2>&1 | tail -1; then
+    rm -rf "$tmp_dir"
+    fail "构建失败"
+    exit 1
+  fi
+
+  # 全局安装
+  info "正在全局安装..."
+  if ! npm install -g . 2>&1 | tail -1; then
+    rm -rf "$tmp_dir"
+    fail "全局安装失败"
+    exit 1
+  fi
+
+  rm -rf "$tmp_dir"
   success "OCM 安装完成"
 }
 
