@@ -189,21 +189,17 @@ install_node_binary() {
   tar -xzf "${tmp_dir}/${tarball}" -C "$tmp_dir"
   local extracted_dir="${tmp_dir}/node-${node_ver}-${os}-${arch_name}"
 
-  # 安装策略：先试用户目录（无需 sudo），失败再试 /usr/local（需要 sudo）
-  local installed=false
+  # 整体移动到 ~/.local/node/（保持原始目录结构，避免符号链接断裂）
+  local node_home="$HOME/.local/node"
+  info "正在安装到 ${node_home}/ ..."
 
-  # 方案 A：安装到 ~/.local/（无需 sudo，推荐）
-  local user_dir="$HOME/.local"
-  info "正在安装到 ${user_dir}/ ..."
-  mkdir -p "${user_dir}/bin" "${user_dir}/lib" "${user_dir}/include" "${user_dir}/share" 2>/dev/null || true
+  # 清理旧安装
+  rm -rf "$node_home" 2>/dev/null || true
+  mkdir -p "$HOME/.local" 2>/dev/null || true
 
-  if cp -r "${extracted_dir}/bin/"* "${user_dir}/bin/" 2>/dev/null && \
-     cp -r "${extracted_dir}/lib/"* "${user_dir}/lib/" 2>/dev/null; then
-    cp -r "${extracted_dir}/include/"* "${user_dir}/include/" 2>/dev/null || true
-    cp -r "${extracted_dir}/share/"* "${user_dir}/share/" 2>/dev/null || true
-
-    # 确保 ~/.local/bin 在 PATH 中
-    export PATH="$HOME/.local/bin:$PATH"
+  if mv "$extracted_dir" "$node_home" 2>/dev/null; then
+    # 将 node bin 目录加入 PATH
+    export PATH="$node_home/bin:$PATH"
 
     # 写入 shell 配置以持久化
     local shell_rc=""
@@ -216,38 +212,31 @@ install_node_binary() {
     fi
 
     if [ -n "$shell_rc" ]; then
-      if ! grep -q 'HOME/.local/bin' "$shell_rc" 2>/dev/null; then
-        printf '\n# Node.js (installed by OCM)\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$shell_rc"
-        info "已将 ~/.local/bin 添加到 ${shell_rc}"
+      # 清理旧的 ~/.local/bin 配置（如果有）
+      if grep -q 'HOME/.local/bin.*# Node.js' "$shell_rc" 2>/dev/null; then
+        sed -i.bak '/# Node.js (installed by OCM)/d; /HOME\/.local\/bin/d' "$shell_rc" 2>/dev/null || true
+      fi
+      if ! grep -q 'HOME/.local/node/bin' "$shell_rc" 2>/dev/null; then
+        printf '\n# Node.js (installed by OCM)\nexport PATH="$HOME/.local/node/bin:$PATH"\n' >> "$shell_rc"
+        info "已将 ~/.local/node/bin 添加到 ${shell_rc}"
       fi
     fi
 
-    installed=true
-  fi
+    rm -rf "$tmp_dir"
 
-  # 方案 B：用户目录失败，尝试 /usr/local（需要 sudo）
-  if [ "$installed" = false ]; then
-    local install_dir="/usr/local"
-    warn "用户目录安装失败，尝试安装到 ${install_dir}（需要管理员密码）..."
-
-    if sudo cp -r "${extracted_dir}/bin/"* "${install_dir}/bin/" && \
-       sudo cp -r "${extracted_dir}/lib/"* "${install_dir}/lib/"; then
-      sudo cp -r "${extracted_dir}/include/"* "${install_dir}/include/" 2>/dev/null || true
-      sudo cp -r "${extracted_dir}/share/"* "${install_dir}/share/" 2>/dev/null || true
-      installed=true
+    # 验证
+    if command_exists node && command_exists npm; then
+      success "Node.js $(node --version) 安装完成"
+      success "npm $(npm --version)"
+      return 0
     else
-      fail "sudo 安装失败（密码错误或被取消）"
+      fail "Node.js 安装后验证失败"
+      info "请手动将 ${node_home}/bin 添加到 PATH"
+      return 1
     fi
-  fi
-
-  rm -rf "$tmp_dir"
-
-  # 验证
-  if [ "$installed" = true ] && command_exists node; then
-    success "Node.js $(node --version) 安装完成 (直接二进制)"
-    return 0
   else
-    fail "Node.js 安装失败"
+    rm -rf "$tmp_dir"
+    fail "无法移动 Node.js 到 ${node_home}"
     info "请手动安装: brew install node@${REQUIRED_NODE_MAJOR} 或访问 https://nodejs.org/"
     return 1
   fi
